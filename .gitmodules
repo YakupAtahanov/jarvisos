@@ -1,0 +1,7 @@
+[submodule "Project-JARVIS"]
+	path = Project-JARVIS
+	url = git@github.com:YakupAtahanov/Project-JARVIS.git
+	branch = linux-integration-preparation
+[submodule "linux"]
+	path = linux
+	url = git@github.com:torvalds/linux.git
