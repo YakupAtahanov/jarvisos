@@ -4,4 +4,4 @@
 	branch = linux-integration-preparation
 [submodule "linux"]
 	path = linux
-	url = git@github.com:torvalds/linux.git
+	url = git@github.com:YakupAtahanov/linux.git

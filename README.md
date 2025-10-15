@@ -99,12 +99,15 @@ The system will automatically install:
 ## 🎤 **JARVIS Integration**
 
 ### **How JARVIS Works**
+For detailed information about JARVIS's architecture and voice processing pipeline, see the [Project-JARVIS README](Project-JARVIS/README.md).
+
+**High-level flow:**
 1. **Voice Input** - Microphone captures your speech
-2. **Speech Recognition** - Whisper converts speech to text
+2. **Speech Recognition** - Converts speech to text
 3. **AI Processing** - LLM understands your request
 4. **Tool Discovery** - SuperMCP finds the right tools
 5. **Execution** - Commands are executed
-6. **Voice Output** - Piper TTS responds back to you
+6. **Voice Output** - Text-to-speech responds back to you
 
 ### **System Integration**
 - **Auto-start on boot** - JARVIS starts automatically
@@ -185,8 +188,9 @@ make kernel
 - [Linux From Scratch](https://www.linuxfromscratch.org/)
 
 ### **JARVIS Development**
-- [Project-JARVIS README](../Project-JARVIS/README.md)
-- [SuperMCP Documentation](../Project-JARVIS/jarvis/SuperMCP/)
+- [Project-JARVIS README](Project-JARVIS/README.md)
+- [SuperMCP Documentation](Project-JARVIS/jarvis/SuperMCP/)
+- [Kernel Integration Guide](Project-JARVIS/packaging/kernel-integration-guide.md)
 
 ## 🤝 **Contributing**
 
