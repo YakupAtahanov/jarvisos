@@ -29,11 +29,23 @@ all: setup kernel packages iso
 help:
 	@echo "$(BLUE)JARVIS OS Build System$(NC)"
 	@echo "$(YELLOW)Available targets:$(NC)"
+	@echo ""
+	@echo "$(BLUE)Core Build:$(NC)"
 	@echo "  $(GREEN)all$(NC)              - Build everything (kernel + packages + ISO)"
 	@echo "  $(GREEN)setup$(NC)            - Initialize build environment"
 	@echo "  $(GREEN)kernel$(NC)           - Build custom kernel"
 	@echo "  $(GREEN)packages$(NC)         - Build JARVIS packages"
 	@echo "  $(GREEN)iso$(NC)              - Create bootable ISO"
+	@echo ""
+	@echo "$(BLUE)Arch Linux Rootfs (Recommended):$(NC)"
+	@echo "  $(GREEN)rootfs-arch$(NC)      - Build Arch Linux root filesystem"
+	@echo "  $(GREEN)rootfs-qcow2$(NC)     - Convert rootfs to QCOW2 image"
+	@echo "  $(GREEN)jarvis-install-arch$(NC) - Install JARVIS to Arch rootfs"
+	@echo "  $(GREEN)jarvis-deps-arch$(NC) - Install Python dependencies"
+	@echo "  $(GREEN)arch-setup$(NC)       - Complete Arch setup (rootfs + JARVIS)"
+	@echo "  $(GREEN)boot-arch$(NC)        - Boot JARVIS OS in QEMU"
+	@echo ""
+	@echo "$(BLUE)Utilities:$(NC)"
 	@echo "  $(GREEN)clean$(NC)            - Clean all build artifacts"
 	@echo "  $(GREEN)update-submodules$(NC) - Update all submodules"
 	@echo "  $(GREEN)build-deps$(NC)       - Install build dependencies"
@@ -166,6 +178,110 @@ clean:
 	cd Project-JARVIS && make clean
 	@echo "$(GREEN)✅ Build artifacts cleaned$(NC)"
 
+# Clean old Fedora rootfs (if switching to Arch)
+clean-fedora:
+	@echo "$(BLUE)🧹 Cleaning old Fedora rootfs...$(NC)"
+	@if [ -f "$(BUILD_DIR)/jarvisos-root.qcow2" ]; then \
+		echo "$(YELLOW)Removing old Fedora QCOW2 image (9.7GB)...$(NC)"; \
+		rm -f $(BUILD_DIR)/jarvisos-root.qcow2; \
+		echo "$(GREEN)✅ Old Fedora rootfs removed$(NC)"; \
+	else \
+		echo "$(GREEN)✅ No old Fedora rootfs found$(NC)"; \
+	fi
+
 # Quick development build (just JARVIS)
 dev: setup jarvis-package
 	@echo "$(GREEN)✅ Development build complete$(NC)"
+
+# ============================================================================
+# Arch Linux Root Filesystem Targets
+# ============================================================================
+
+# Build Arch Linux rootfs
+rootfs-arch:
+	@echo "$(BLUE)🏗️  Building Arch Linux root filesystem...$(NC)"
+	./scripts/create-arch-rootfs.sh $(BUILD_DIR)
+	@echo "$(GREEN)✅ Arch rootfs created$(NC)"
+
+# Convert Arch rootfs to QCOW2
+rootfs-qcow2: rootfs-arch
+	@echo "$(BLUE)💾 Converting Arch rootfs to QCOW2...$(NC)"
+	./scripts/convert-rootfs-to-qcow2.sh $(BUILD_DIR)/arch-rootfs $(BUILD_DIR)/jarvisos-root.qcow2 20
+	@echo "$(GREEN)✅ QCOW2 image created$(NC)"
+
+# Install JARVIS to Arch rootfs
+jarvis-install-arch:
+	@echo "$(BLUE)🤖 Installing JARVIS to Arch rootfs...$(NC)"
+	@if [ ! -d "$(BUILD_DIR)/arch-rootfs" ]; then \
+		echo "$(RED)❌ Arch rootfs not found. Run 'make rootfs-arch' first$(NC)"; \
+		exit 1; \
+	fi
+	@set -e; \
+	if command -v arch-chroot > /dev/null; then \
+		CHROOT_CMD="arch-chroot $(BUILD_DIR)/arch-rootfs"; \
+	elif command -v systemd-nspawn > /dev/null; then \
+		CHROOT_CMD="systemd-nspawn -q -D $(BUILD_DIR)/arch-rootfs"; \
+	else \
+		echo "$(RED)❌ Need arch-chroot or systemd-nspawn$(NC)"; \
+		exit 1; \
+	fi; \
+	echo "$(BLUE)📋 Copying Project-JARVIS...$(NC)"; \
+	sudo mkdir -p $(BUILD_DIR)/arch-rootfs/usr/lib/jarvis; \
+	sudo cp -a Project-JARVIS/jarvis/* $(BUILD_DIR)/arch-rootfs/usr/lib/jarvis/; \
+	sudo cp Project-JARVIS/requirements.txt $(BUILD_DIR)/arch-rootfs/usr/lib/jarvis/; \
+	echo "$(BLUE)📋 Copying systemd service...$(NC)"; \
+	sudo mkdir -p $(BUILD_DIR)/arch-rootfs/etc/jarvis; \
+	sudo cp build/jarvis.service $(BUILD_DIR)/arch-rootfs/etc/systemd/system/; \
+	sudo cp build/jarvis.conf $(BUILD_DIR)/arch-rootfs/etc/jarvis/; \
+	echo "$(BLUE)📟 Installing 'jarvis' CLI helper...$(NC)"; \
+	sudo tee $(BUILD_DIR)/arch-rootfs/usr/bin/jarvis > /dev/null <<'EOF'; \
+#!/bin/bash
+exec /usr/bin/python3 /usr/lib/jarvis/jarvis.cli.py "$@"
+EOF
+	sudo chmod +x $(BUILD_DIR)/arch-rootfs/usr/bin/jarvis; \
+	if [ -f "build/jarvis.service" ]; then \
+		echo "$(BLUE)🔧 Enabling jarvis.service...$(NC)"; \
+		sudo $$CHROOT_CMD systemctl enable jarvis.service; \
+	fi; \
+	echo "$(GREEN)✅ JARVIS installed$(NC)"
+
+# Install Python dependencies in Arch rootfs
+jarvis-deps-arch: jarvis-install-arch
+	@echo "$(BLUE)📦 Installing JARVIS Python dependencies...$(NC)"
+	@if [ ! -d "$(BUILD_DIR)/arch-rootfs/usr/lib/jarvis" ]; then \
+		echo "$(RED)❌ JARVIS files not found in rootfs. Run 'make jarvis-install-arch' first$(NC)"; \
+		exit 1; \
+	fi
+	@set -e; \
+	if command -v arch-chroot > /dev/null; then \
+		CHROOT_CMD="arch-chroot $(BUILD_DIR)/arch-rootfs"; \
+	elif command -v systemd-nspawn > /dev/null; then \
+		CHROOT_CMD="systemd-nspawn -q -D $(BUILD_DIR)/arch-rootfs"; \
+	else \
+		echo "$(RED)❌ Need arch-chroot or systemd-nspawn$(NC)"; \
+		exit 1; \
+	fi; \
+	sudo $$CHROOT_CMD bash -c "cd /usr/lib/jarvis && PIP_BREAK_SYSTEM_PACKAGES=1 pip install --break-system-packages -r requirements.txt"; \
+	echo "$(GREEN)✅ Dependencies installed$(NC)"
+
+# Complete Arch setup (rootfs + JARVIS + deps)
+arch-setup: rootfs-qcow2 jarvis-install-arch
+	@echo "$(GREEN)✅ Arch Linux JARVIS OS setup complete!$(NC)"
+	@echo "$(BLUE)📦 QCOW2 image: $(BUILD_DIR)/jarvisos-root.qcow2$(NC)"
+	@echo "$(YELLOW)💡 Next: Install dependencies with 'make jarvis-deps-arch'$(NC)"
+	@echo "$(YELLOW)💡 Or boot and install manually: 'make boot'$(NC)"
+
+# Boot JARVIS OS in QEMU (Arch)
+boot-arch:
+	@echo "$(BLUE)🚀 Booting JARVIS OS (Arch)...$(NC)"
+	@if [ ! -f "$(BUILD_DIR)/jarvisos-root.qcow2" ]; then \
+		echo "$(RED)❌ QCOW2 image not found. Run 'make arch-setup' first$(NC)"; \
+		exit 1; \
+	fi
+	qemu-system-x86_64 \
+		-kernel $(BUILD_DIR)/kernel/vmlinuz-$(KERNEL_VERSION) \
+		-initrd $(BUILD_DIR)/initramfs.img \
+		-drive file=$(BUILD_DIR)/jarvisos-root.qcow2,format=qcow2,if=virtio \
+		-append "console=ttyS0 root=/dev/vda3 rw" \
+		-m 2048 \
+		-nographic
