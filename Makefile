@@ -234,10 +234,7 @@ jarvis-install-arch:
 	sudo cp build/jarvis.service $(BUILD_DIR)/arch-rootfs/etc/systemd/system/; \
 	sudo cp build/jarvis.conf $(BUILD_DIR)/arch-rootfs/etc/jarvis/; \
 	echo "$(BLUE)📟 Installing 'jarvis' CLI helper...$(NC)"; \
-	sudo tee $(BUILD_DIR)/arch-rootfs/usr/bin/jarvis > /dev/null <<'EOF'; \
-#!/bin/bash
-exec /usr/bin/python3 /usr/lib/jarvis/jarvis.cli.py "$@"
-EOF
+	printf '%s\n' '#!/bin/bash' 'exec /usr/bin/python3 /usr/lib/jarvis/jarvis.cli.py "$@"' | sudo tee $(BUILD_DIR)/arch-rootfs/usr/bin/jarvis > /dev/null; \
 	sudo chmod +x $(BUILD_DIR)/arch-rootfs/usr/bin/jarvis; \
 	if [ -f "build/jarvis.service" ]; then \
 		echo "$(BLUE)🔧 Enabling jarvis.service...$(NC)"; \
