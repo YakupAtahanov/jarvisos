@@ -301,6 +301,14 @@ PACKAGES=(
     openssh        # SSH
 )
 
+# Append extra packages from environment (space-separated)
+if [ -n "${EXTRA_PACKAGES:-}" ]; then
+    echo -e "${BLUE}➕ Adding extra packages from config: ${EXTRA_PACKAGES}${NC}"
+    # shellcheck disable=SC2206
+    EXTRA_ARRAY=(${EXTRA_PACKAGES})
+    PACKAGES+=( "${EXTRA_ARRAY[@]}" )
+fi
+
 # Install packages - use pacstrap (designed for this, bypasses mount point issues)
 # Don't install systemd again (already updated above)
 echo -e "${BLUE}📦 Installing ${#PACKAGES[@]} packages with pacstrap...${NC}"

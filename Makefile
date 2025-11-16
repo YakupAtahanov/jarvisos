@@ -5,6 +5,7 @@
 .PHONY: update-submodules pull-updates build-deps
 .PHONY: kernel-config kernel-build kernel-install
 .PHONY: jarvis-package repo-create iso-create
+.PHONY: configure models gen-jarvis-conf
 
 # Configuration
 DISTRO_NAME = JARVIS-OS
@@ -12,6 +13,19 @@ DISTRO_VERSION = 1.0.0
 BUILD_DIR = build
 KERNEL_VERSION = 6.16.5
 ARCH = x86_64
+
+# Load generated configuration if present (configure writes this)
+-include $(BUILD_DIR)/config.mk
+# Load QEMU VM config (editable)
+-include configs/qemu_config.mk
+# Defaults if not defined in includes
+QEMU_RAM        ?= 2048
+QEMU_CPUS       ?= 2
+QEMU_ENABLE_KVM ?= 1
+QEMU_DISK_GB    ?= 20
+QEMU_EXTRA      ?=
+# Compose accel flags
+QEMU_ACCEL      := $(if $(QEMU_ENABLE_KVM),-enable-kvm -cpu host,)
 
 # Colors for output
 RED = \033[0;31m
@@ -30,6 +44,8 @@ help:
 	@echo "$(BLUE)JARVIS OS Build System$(NC)"
 	@echo "$(YELLOW)Available targets:$(NC)"
 	@echo ""
+	@echo "$(BLUE)Config:$(NC)"
+	@echo "  $(GREEN)configure$(NC)        - Generate $(BUILD_DIR)/config.mk from configs/builder.toml (PROFILE=<name>)"
 	@echo "$(BLUE)Core Build:$(NC)"
 	@echo "  $(GREEN)all$(NC)              - Build everything (kernel + packages + ISO)"
 	@echo "  $(GREEN)setup$(NC)            - Initialize build environment"
@@ -44,12 +60,19 @@ help:
 	@echo "  $(GREEN)jarvis-deps-arch$(NC) - Install Python dependencies"
 	@echo "  $(GREEN)arch-setup$(NC)       - Complete Arch setup (rootfs + JARVIS)"
 	@echo "  $(GREEN)boot-arch$(NC)        - Boot JARVIS OS in QEMU"
+	@echo "  $(GREEN)models$(NC)           - Download models (Vosk/Piper) into rootfs based on config"
 	@echo ""
 	@echo "$(BLUE)Utilities:$(NC)"
 	@echo "  $(GREEN)clean$(NC)            - Clean all build artifacts"
 	@echo "  $(GREEN)update-submodules$(NC) - Update all submodules"
 	@echo "  $(GREEN)build-deps$(NC)       - Install build dependencies"
 	@echo "  $(GREEN)test$(NC)             - Test the build system"
+
+# Generate build/config.mk from configs/builder.toml
+configure:
+	@echo "$(BLUE)⚙️  Generating configuration (PROFILE=$${PROFILE:-$(PROFILE)})...$(NC)"
+	@python3 scripts/read-config.py --toml configs/builder.toml --profile "$${PROFILE:-$(PROFILE)}" --out $(BUILD_DIR)/config.mk
+	@echo "$(GREEN)✅ Wrote $(BUILD_DIR)/config.mk$(NC)"
 
 # Initialize build environment
 setup:
@@ -203,10 +226,10 @@ rootfs-arch:
 	./scripts/create-arch-rootfs.sh $(BUILD_DIR)
 	@echo "$(GREEN)✅ Arch rootfs created$(NC)"
 
-# Convert Arch rootfs to QCOW2
-rootfs-qcow2: rootfs-arch
+# Convert Arch rootfs to QCOW2 (does NOT rebuild rootfs to avoid wiping staged changes)
+rootfs-qcow2:
 	@echo "$(BLUE)💾 Converting Arch rootfs to QCOW2...$(NC)"
-	./scripts/convert-rootfs-to-qcow2.sh $(BUILD_DIR)/arch-rootfs $(BUILD_DIR)/jarvisos-root.qcow2 20
+	./scripts/convert-rootfs-to-qcow2.sh $(BUILD_DIR)/arch-rootfs $(BUILD_DIR)/jarvisos-root.qcow2 $(QEMU_DISK_GB)
 	@echo "$(GREEN)✅ QCOW2 image created$(NC)"
 
 # Install JARVIS to Arch rootfs
@@ -216,6 +239,7 @@ jarvis-install-arch:
 		echo "$(RED)❌ Arch rootfs not found. Run 'make rootfs-arch' first$(NC)"; \
 		exit 1; \
 	fi
+	@$(MAKE) gen-jarvis-conf >/dev/null
 	@set -e; \
 	if command -v arch-chroot > /dev/null; then \
 		CHROOT_CMD="arch-chroot $(BUILD_DIR)/arch-rootfs"; \
@@ -232,9 +256,9 @@ jarvis-install-arch:
 	echo "$(BLUE)📋 Copying systemd service...$(NC)"; \
 	sudo mkdir -p $(BUILD_DIR)/arch-rootfs/etc/jarvis; \
 	sudo cp build/jarvis.service $(BUILD_DIR)/arch-rootfs/etc/systemd/system/; \
-	sudo cp build/jarvis.conf $(BUILD_DIR)/arch-rootfs/etc/jarvis/; \
+	if [ -f build/jarvis.conf ]; then sudo cp build/jarvis.conf $(BUILD_DIR)/arch-rootfs/etc/jarvis/; fi; \
 	echo "$(BLUE)📟 Installing 'jarvis' CLI helper...$(NC)"; \
-	printf '%s\n' '#!/bin/bash' 'exec /usr/bin/python3 /usr/lib/jarvis/jarvis.cli.py "$@"' | sudo tee $(BUILD_DIR)/arch-rootfs/usr/bin/jarvis > /dev/null; \
+	printf '%s\n' '#!/bin/bash' 'exec /usr/bin/python3 /usr/lib/jarvis/cli.py "$@"' | sudo tee $(BUILD_DIR)/arch-rootfs/usr/bin/jarvis > /dev/null; \
 	sudo chmod +x $(BUILD_DIR)/arch-rootfs/usr/bin/jarvis; \
 	if [ -f "build/jarvis.service" ]; then \
 		echo "$(BLUE)🔧 Enabling jarvis.service...$(NC)"; \
@@ -242,6 +266,17 @@ jarvis-install-arch:
 	fi; \
 	echo "$(GREEN)✅ JARVIS installed$(NC)"
 
+# Generate build/jarvis.conf from configuration
+gen-jarvis-conf:
+	@echo "$(BLUE)📝 Generating jarvis.conf from config...$(NC)"
+	@bash scripts/gen-jarvis-conf.sh
+	@echo "$(GREEN)✅ Wrote build/jarvis.conf$(NC)"
+
+# Download models into staged rootfs using configured model choices
+models:
+	@echo "$(BLUE)🎤 Downloading configured models into rootfs...$(NC)"
+	@bash scripts/fetch-models.sh "$(BUILD_DIR)/arch-rootfs" "$(VOSK_MODEL)" "$(PIPER_VOICE)"
+	@echo "$(GREEN)✅ Models prepared (if configured)$(NC)"
 # Install Python dependencies in Arch rootfs
 jarvis-deps-arch: jarvis-install-arch
 	@echo "$(BLUE)📦 Installing JARVIS Python dependencies...$(NC)"
@@ -275,10 +310,84 @@ boot-arch:
 		echo "$(RED)❌ QCOW2 image not found. Run 'make arch-setup' first$(NC)"; \
 		exit 1; \
 	fi
-	qemu-system-x86_64 \
+	$(QEMU_BIN) \
+		$(if $(QEMU_MACHINE),-machine $(QEMU_MACHINE),) \
 		-kernel $(BUILD_DIR)/kernel/vmlinuz-$(KERNEL_VERSION) \
 		-initrd $(BUILD_DIR)/initramfs.img \
-		-drive file=$(BUILD_DIR)/jarvisos-root.qcow2,format=qcow2,if=virtio \
-		-append "console=ttyS0 root=/dev/vda3 rw" \
-		-m 2048 \
-		-nographic
+		-drive file=$(BUILD_DIR)/jarvisos-root.qcow2,format=qcow2,if=$(QEMU_DISK_IF),cache=$(QEMU_DISK_CACHE) \
+		-append "console=ttyS0 root=/dev/vda rw" \
+		-m $(QEMU_RAM) \
+		-smp $(QEMU_CPUS) \
+		$(QEMU_ACCEL) \
+		$(if $(QEMU_CPU),-cpu $(QEMU_CPU),) \
+		$(QEMU_NET_OPTS) \
+		$(QEMU_DISPLAY_OPTS) \
+		$(QEMU_AUDIO_OPTS) \
+		$(QEMU_USB_OPTS) \
+		$(QEMU_SERIAL_OPTS) \
+		$(QEMU_NAME_OPTS) \
+		$(QEMU_SMBIOS_OPTS) \
+		$(QEMU_FIRMWARE_OPTS) \
+		$(QEMU_PASSTHROUGH) \
+		$(QEMU_EXTRA)
+
+# ------------------------------------------------------------
+# Cleanup targets (optional artifact pruning)
+# ------------------------------------------------------------
+
+# Remove packaged image and staged rootfs (keeps kernel and initramfs source dir)
+unstore-builds:
+	@echo "$(YELLOW)🧹 Removing staged rootfs and QCOW2 (keeps kernel/initramfs dir)...$(NC)"
+	@# Stop any running VMs that may lock files
+	pkill -f qemu-system-x86_64 2>/dev/null || true
+	@# Unmount any pseudo-filesystems inside staged rootfs (ignore errors)
+	sudo umount -l $(BUILD_DIR)/arch-rootfs/var/cache/pacman/pkg 2>/dev/null || true
+	sudo umount -l $(BUILD_DIR)/arch-rootfs/dev/pts $(BUILD_DIR)/arch-rootfs/dev/shm 2>/dev/null || true
+	sudo umount -l $(BUILD_DIR)/arch-rootfs/dev $(BUILD_DIR)/arch-rootfs/proc $(BUILD_DIR)/arch-rootfs/sys $(BUILD_DIR)/arch-rootfs/run 2>/dev/null || true
+	@# Remove staged rootfs contents and image
+	sudo rm -rf $(BUILD_DIR)/arch-rootfs $(BUILD_DIR)/jarvisos-root.qcow2 2>/dev/null || true
+	@# Remove caches/snapshots we can regenerate
+	rm -rf $(BUILD_DIR)/archlinux-bootstrap-*.tar.* $(BUILD_DIR)/arch-rootfs.old.* $(BUILD_DIR)/python-download 2>/dev/null || true
+	@echo "$(GREEN)✅ Build artifacts removed (kernel kept at $(BUILD_DIR)/kernel)$(NC)"
+
+# Remove everything including kernel and generated initramfs image
+unstore-all:
+	@echo "$(YELLOW)🧨 Removing ALL build artifacts (kernel, initramfs.img, rootfs, qcow2)...$(NC)"
+	@# Stop any running VMs that may lock files
+	pkill -f qemu-system-x86_64 2>/dev/null || true
+	@# Broad unmount sweep for any leftover binds under build
+	mount | awk '/github\/jarvisos\/build/ {print $$3}' | awk '{print length, $$0}' | sort -nr | cut -d" " -f2- | sudo xargs -r -n1 umount -l
+	@# Remove all build outputs
+	sudo rm -rf $(BUILD_DIR)/arch-rootfs $(BUILD_DIR)/jarvisos-root.qcow2 $(BUILD_DIR)/initramfs.img $(BUILD_DIR)/kernel \
+		$(BUILD_DIR)/archlinux-bootstrap-*.tar.* $(BUILD_DIR)/arch-rootfs.old.* $(BUILD_DIR)/python-download \
+		$(BUILD_DIR)/iso $(BUILD_DIR)/repo $(BUILD_DIR)/rootfs $(BUILD_DIR)/packages 2>/dev/null || true
+	@echo "$(GREEN)✅ All build artifacts removed$(NC)"
+
+# ------------------------------------------------------------
+# Fast path: inject updated JARVIS into QCOW2 (no restage)
+# Requires: libguestfs-tools-c (virt-copy-in, virt-customize)
+# ------------------------------------------------------------
+inject-jarvis:
+	@echo "$(BLUE)📦 Injecting Project-JARVIS into QCOW2...$(NC)"
+	@if [ ! -f "$(BUILD_DIR)/jarvisos-root.qcow2" ]; then \
+		echo "$(RED)❌ QCOW2 image not found. Build it first$(NC)"; \
+		exit 1; \
+	fi
+	@# Copy code
+	virt-copy-in -a $(BUILD_DIR)/jarvisos-root.qcow2 Project-JARVIS/jarvis /usr/lib/
+	virt-copy-in -a $(BUILD_DIR)/jarvisos-root.qcow2 Project-JARVIS/requirements.txt /usr/lib/jarvis/
+	@# Ensure CLI wrapper exists
+	printf '%s\n' '#!/bin/bash' 'exec /usr/bin/python3 /usr/lib/jarvis/cli.py "$@"' | \
+		virt-customize -a $(BUILD_DIR)/jarvisos-root.qcow2 --run-command "cat > /usr/bin/jarvis && chmod +x /usr/bin/jarvis"
+	@echo "$(GREEN)✅ Injected JARVIS code and CLI into QCOW2$(NC)"
+
+inject-jarvis-deps:
+	@echo "$(BLUE)📦 Installing JARVIS deps inside QCOW2...$(NC)"
+	@if [ ! -f "$(BUILD_DIR)/jarvisos-root.qcow2" ]; then \
+		echo "$(RED)❌ QCOW2 image not found. Build it first$(NC)"; \
+		exit 1; \
+	fi
+	virt-customize -a $(BUILD_DIR)/jarvisos-root.qcow2 \
+		--run-command 'bash -lc "cd /usr/lib/jarvis && PIP_BREAK_SYSTEM_PACKAGES=1 pip install --break-system-packages -r requirements.txt"' || \
+		{ echo "$(YELLOW)⚠️  virt-customize failed; ensure libguestfs-tools-c is installed$(NC)"; exit 1; }
+	@echo "$(GREEN)✅ Dependencies installed inside QCOW2$(NC)"

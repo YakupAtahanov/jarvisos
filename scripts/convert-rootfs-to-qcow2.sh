@@ -43,10 +43,11 @@ echo -e "${BLUE}📦 Creating ${SIZE_GB}GB QCOW2 image...${NC}"
 qemu-img create -f qcow2 "${QCOW2_IMAGE}" "${SIZE_GB}G"
 
 # Use virt-make-fs if available (simplest method)
-if command -v virt-make-fs &> /dev/null; then
+if command -v virt-make-fs &> \\/dev\\/null; then
     echo -e "${BLUE}🔧 Using virt-make-fs to create filesystem...${NC}"
     echo -e "${BLUE}🔐 virt-make-fs needs root to read protected dirs (du)${NC}"
-    sudo virt-make-fs --format=qcow2 --size="${SIZE_GB}G" --type=ext4 \
+    # Use XFS to match kernel support in initramfs reliably
+    sudo virt-make-fs --format=qcow2 --size="${SIZE_GB}G" --type=xfs \
         --label="JARVISOS" \
         "${ROOTFS_DIR}" "${QCOW2_IMAGE}.tmp"
     sudo mv "${QCOW2_IMAGE}.tmp" "${QCOW2_IMAGE}"

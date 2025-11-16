@@ -1,0 +1,32 @@
+default_profile = "minimal"
+
+[globals]
+arch = "x86_64"                # x86_64 | aarch64 (future)
+kernel_version = "6.16.5"
+distro_version = "1.0.0"
+
+[profiles.minimal]
+description = "Minimal headless build with CLI JARVIS and optional models"
+rootfs_extra_packages = ["curl","ca-certificates"]
+jarvis_enabled = true
+jarvis_mode = "text"           # text | voice
+loading_strategy = "disabled"  # disabled | lazy | background
+background_priority = 15
+active_priority = 0
+models_vosk = ""
+models_piper_voice = ""
+ollama_model = ""
+
+[profiles.desktop]
+description = "Desktop-leaning build with voice-ready defaults"
+rootfs_extra_packages = ["curl","ca-certificates","pulseaudio","alsa-utils"]
+jarvis_enabled = true
+jarvis_mode = "voice"
+loading_strategy = "lazy"
+background_priority = 15
+active_priority = 0
+models_vosk = "vosk-model-small-en-us-0.15"
+models_piper_voice = "en_US-libritts_r-medium"
+ollama_model = "codegemma:7b-instruct-q5_K_M"
+
+
