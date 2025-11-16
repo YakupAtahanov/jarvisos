@@ -100,11 +100,24 @@ pull-updates:
 build-deps:
 	@echo "$(BLUE)📋 Installing build dependencies...$(NC)"
 	@echo "$(YELLOW)This will install packages needed to build JARVIS OS$(NC)"
-	sudo dnf5 install -y @development-tools || sudo apt-get update && sudo apt-get install -y build-essential
-	sudo dnf5 install -y bc bison flex elfutils-libelf-devel openssl-devel || sudo apt-get install -y bc bison flex libelf-dev libssl-dev
-	sudo dnf5 install -y rpm-build createrepo_c || sudo apt-get install -y rpm dpkg-dev
-	sudo dnf5 install -y genisoimage xorriso || sudo apt-get install -y genisoimage xorriso
-	sudo dnf5 install -y python3 python3-pip || sudo apt-get install -y python3 python3-pip
+	@set -e; \
+	if command -v dnf5 >/dev/null 2>&1; then \
+		PKG=dnf5; \
+	elif command -v dnf >/dev/null 2>&1; then \
+		PKG=dnf; \
+	else \
+		echo "$(RED)❌ Unsupported distro: expected dnf/dnf5 (Fedora).$(NC)"; \
+		echo "$(YELLOW)If on Debian/Ubuntu, install equivalents manually: build-essential bc bison flex libelf-dev libssl-dev genisoimage xorriso python3 python3-pip libguestfs-tools qemu-kvm qemu-utils$(NC)"; \
+		exit 1; \
+	fi; \
+	echo "$(BLUE)🔧 Using $$PKG to install dependencies...$(NC)"; \
+	# Prefer group by @id; fallback to display name; skip if unavailable; don't fail the whole build here \
+	sudo $$PKG -y install @development-tools --skip-unavailable || sudo $$PKG -y group install "Development Tools" --skip-unavailable || true; \
+	sudo $$PKG -y install bc bison flex elfutils-libelf-devel openssl-devel; \
+	sudo $$PKG -y install rpm-build createrepo_c; \
+	sudo $$PKG -y install genisoimage xorriso; \
+	sudo $$PKG -y install python3 python3-pip; \
+	sudo $$PKG -y install arch-install-scripts libguestfs-tools-c qemu-kvm qemu-img
 	@echo "$(GREEN)✅ Build dependencies installed$(NC)"
 
 # Build kernel
