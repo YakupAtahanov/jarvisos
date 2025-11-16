@@ -16,6 +16,16 @@ if [ ! -d "$ROOTFS_DIR" ]; then
 	exit 1
 fi
 
+# Basic tool checks
+if ! command -v wget >/dev/null 2>&1; then
+	echo "❌ 'wget' is required to download models. Install it and re-run."
+	exit 1
+fi
+if [ -n "$VOSK_MODEL" ] && ! command -v unzip >/dev/null 2>&1; then
+	echo "❌ 'unzip' is required to extract Vosk models. Install it and re-run."
+	exit 1
+fi
+
 MODELS_DIR="$ROOTFS_DIR/var/lib/jarvis/models"
 mkdir -p "$MODELS_DIR" "$MODELS_DIR/piper"
 

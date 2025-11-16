@@ -43,7 +43,7 @@ echo -e "${BLUE}📦 Creating ${SIZE_GB}GB QCOW2 image...${NC}"
 qemu-img create -f qcow2 "${QCOW2_IMAGE}" "${SIZE_GB}G"
 
 # Use virt-make-fs if available (simplest method)
-if command -v virt-make-fs &> \\/dev\\/null; then
+if command -v virt-make-fs &> /dev/null; then
     echo -e "${BLUE}🔧 Using virt-make-fs to create filesystem...${NC}"
     echo -e "${BLUE}🔐 virt-make-fs needs root to read protected dirs (du)${NC}"
     # Use XFS to match kernel support in initramfs reliably
