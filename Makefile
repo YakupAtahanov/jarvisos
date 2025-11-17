@@ -236,6 +236,11 @@ dev: setup jarvis-package
 # Build Arch Linux rootfs
 rootfs-arch:
 	@echo "$(BLUE)🏗️  Building Arch Linux root filesystem...$(NC)"
+	@if [ -f "$(BUILD_DIR)/config.mk" ]; then \
+		EXTRA_PACKAGES=$$(grep '^EXTRA_PACKAGES :=' $(BUILD_DIR)/config.mk | sed 's/^EXTRA_PACKAGES := "//;s/"$$//'); \
+		export EXTRA_PACKAGES; \
+		echo "$(BLUE)📦 Extra packages from config: $$EXTRA_PACKAGES$(NC)"; \
+	fi; \
 	./scripts/create-arch-rootfs.sh $(BUILD_DIR)
 	@echo "$(GREEN)✅ Arch rootfs created$(NC)"
 
@@ -270,9 +275,22 @@ jarvis-install-arch:
 	sudo mkdir -p $(BUILD_DIR)/arch-rootfs/etc/jarvis; \
 	sudo cp build/jarvis.service $(BUILD_DIR)/arch-rootfs/etc/systemd/system/; \
 	if [ -f build/jarvis.conf ]; then sudo cp build/jarvis.conf $(BUILD_DIR)/arch-rootfs/etc/jarvis/; fi; \
+	echo "$(BLUE)🧰 Creating Python virtual environment for JARVIS...$(NC)"; \
+	if [ ! -d "$(BUILD_DIR)/arch-rootfs/usr/lib/jarvis/.venv" ]; then \
+		sudo $$CHROOT_CMD bash -c "cd /usr/lib/jarvis && python3 -m venv .venv" || { echo "$(RED)❌ Failed to create venv$(NC)"; exit 1; }; \
+		sudo $$CHROOT_CMD bash -c "/usr/lib/jarvis/.venv/bin/pip install --upgrade pip" || { echo "$(YELLOW)⚠️  Failed to upgrade pip (non-fatal)$(NC)"; }; \
+		echo "$(GREEN)✅ Virtual environment created$(NC)"; \
+	else \
+		echo "$(YELLOW)⚠️  Virtual environment already exists, skipping creation$(NC)"; \
+	fi; \
 	echo "$(BLUE)📟 Installing 'jarvis' CLI helper...$(NC)"; \
-	printf '%s\n' '#!/bin/bash' 'exec /usr/bin/python3 /usr/lib/jarvis/cli.py "$@"' | sudo tee $(BUILD_DIR)/arch-rootfs/usr/bin/jarvis > /dev/null; \
-	sudo chmod +x $(BUILD_DIR)/arch-rootfs/usr/bin/jarvis; \
+	JARVIS_WRAPPER=$$(mktemp) && \
+	echo '#!/bin/bash' > $$JARVIS_WRAPPER && \
+	echo 'export PYTHONPATH=/usr/lib$${PYTHONPATH:+:$$PYTHONPATH}' >> $$JARVIS_WRAPPER && \
+	echo 'exec /usr/lib/jarvis/.venv/bin/python -m jarvis.cli "$$@"' >> $$JARVIS_WRAPPER && \
+	sudo cp $$JARVIS_WRAPPER $(BUILD_DIR)/arch-rootfs/usr/bin/jarvis && \
+	sudo chmod +x $(BUILD_DIR)/arch-rootfs/usr/bin/jarvis && \
+	rm -f $$JARVIS_WRAPPER; \
 	if [ -f "build/jarvis.service" ]; then \
 		echo "$(BLUE)🔧 Enabling jarvis.service...$(NC)"; \
 		sudo $$CHROOT_CMD systemctl enable jarvis.service; \
@@ -306,7 +324,7 @@ jarvis-deps-arch: jarvis-install-arch
 		echo "$(RED)❌ Need arch-chroot or systemd-nspawn$(NC)"; \
 		exit 1; \
 	fi; \
-	sudo $$CHROOT_CMD bash -c "cd /usr/lib/jarvis && PIP_BREAK_SYSTEM_PACKAGES=1 pip install --break-system-packages -r requirements.txt"; \
+	sudo $$CHROOT_CMD bash -lc "cd /usr/lib/jarvis && /usr/lib/jarvis/.venv/bin/pip install -r requirements.txt"; \
 	echo "$(GREEN)✅ Dependencies installed$(NC)"
 
 # Complete Arch setup (rootfs + JARVIS + deps)
@@ -327,7 +345,7 @@ boot-arch:
 		$(if $(QEMU_MACHINE),-machine $(QEMU_MACHINE),) \
 		-kernel $(BUILD_DIR)/kernel/vmlinuz-$(KERNEL_VERSION) \
 		-initrd $(BUILD_DIR)/initramfs.img \
-		-drive file=$(BUILD_DIR)/jarvisos-root.qcow2,format=qcow2,if=$(QEMU_DISK_IF),cache=$(QEMU_DISK_CACHE) \
+		-drive file=$(BUILD_DIR)/jarvisos-root.qcow2,format=qcow2,if=$(strip $(QEMU_DISK_IF)),cache=$(strip $(QEMU_DISK_CACHE)) \
 		-append "console=ttyS0 root=/dev/vda rw" \
 		-m $(QEMU_RAM) \
 		-smp $(QEMU_CPUS) \

@@ -42,14 +42,36 @@ echo -e "${BLUE}💾 Converting Arch rootfs to QCOW2 image...${NC}"
 echo -e "${BLUE}📦 Creating ${SIZE_GB}GB QCOW2 image...${NC}"
 qemu-img create -f qcow2 "${QCOW2_IMAGE}" "${SIZE_GB}G"
 
-# Use virt-make-fs if available (simplest method)
-if command -v virt-make-fs &> /dev/null; then
+# If user requests loop method explicitly, skip virt-make-fs
+if [ -n "${USE_LOOP:-}" ]; then
+    echo -e "${YELLOW}⚠️  USE_LOOP=1 set; skipping libguestfs and using loop-device method${NC}"
+elif command -v virt-make-fs &> /dev/null; then
     echo -e "${BLUE}🔧 Using virt-make-fs to create filesystem...${NC}"
+    echo -e "${BLUE}🧹 Staging clean rootfs (excluding /proc,/sys,/dev,/run, pacman cache)...${NC}"
+    # Create staging dir on the same filesystem as ROOTFS_DIR (avoids small /tmp)
+    STAGE_PARENT="$(dirname "${ROOTFS_DIR}")"
+    STAGE_DIR="$(mktemp -d -p "${STAGE_PARENT}" .stage.XXXXXX)"
+    # Prefer rsync with excludes; fallback to cp -a then prune
+    if command -v rsync >/dev/null 2>&1; then
+        sudo rsync -aHAX --delete --numeric-ids \
+            --exclude='/proc/*' \
+            --exclude='/sys/*' \
+            --exclude='/dev/*' \
+            --exclude='/run/*' \
+            --exclude='/var/cache/pacman/pkg/*' \
+            "${ROOTFS_DIR}/" "${STAGE_DIR}/"
+    else
+        echo -e "${YELLOW}⚠️  rsync not found; falling back to cp -a and pruning excludes${NC}"
+        sudo cp -a "${ROOTFS_DIR}/." "${STAGE_DIR}/"
+        sudo rm -rf "${STAGE_DIR}/proc" "${STAGE_DIR}/sys" "${STAGE_DIR}/dev" "${STAGE_DIR}/run" \
+            "${STAGE_DIR}/var/cache/pacman/pkg" 2>/dev/null || true
+    fi
     echo -e "${BLUE}🔐 virt-make-fs needs root to read protected dirs (du)${NC}"
     # Use XFS to match kernel support in initramfs reliably
     sudo virt-make-fs --format=qcow2 --size="${SIZE_GB}G" --type=xfs \
         --label="JARVISOS" \
-        "${ROOTFS_DIR}" "${QCOW2_IMAGE}.tmp"
+        "${STAGE_DIR}" "${QCOW2_IMAGE}.tmp"
+    sudo rm -rf "${STAGE_DIR}"
     sudo mv "${QCOW2_IMAGE}.tmp" "${QCOW2_IMAGE}"
     sudo chown "$(id -u)":"$(id -g)" "${QCOW2_IMAGE}"
     echo -e "${GREEN}✅ QCOW2 image created!${NC}"

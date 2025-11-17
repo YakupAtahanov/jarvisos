@@ -7,7 +7,7 @@ distro_version = "1.0.0"
 
 [profiles.minimal]
 description = "Minimal headless build with CLI JARVIS and optional models"
-rootfs_extra_packages = ["curl","ca-certificates"]
+rootfs_extra_packages = ["curl","ca-certificates","portaudio","alsa-utils"]
 jarvis_enabled = true
 jarvis_mode = "text"           # text | voice
 loading_strategy = "disabled"  # disabled | lazy | background
@@ -19,7 +19,7 @@ ollama_model = ""
 
 [profiles.desktop]
 description = "Desktop-leaning build with voice-ready defaults"
-rootfs_extra_packages = ["curl","ca-certificates","pulseaudio","alsa-utils"]
+rootfs_extra_packages = ["curl","ca-certificates","pulseaudio","alsa-utils","portaudio"]
 jarvis_enabled = true
 jarvis_mode = "voice"
 loading_strategy = "lazy"

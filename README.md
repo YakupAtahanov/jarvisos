@@ -31,27 +31,107 @@ jarvisos/
 - 16GB+ RAM (for building)
 - 50GB+ free disk space
 - Internet connection
+- Root/sudo access for package installation
 
-### **Build JARVIS OS**
+### **Complete Build Process (Arch Linux Rootfs)**
+
+This is the recommended way to build JARVIS OS with a full Arch Linux userspace:
+
 ```bash
-# 1. Clone with submodules
-git clone --recursive https://github.com/yourusername/jarvisos.git
+# 1. Clone repository with submodules
+git clone --recursive https://github.com/YakupAtahanov/jarvisos.git
 cd jarvisos
 
-# 2. Install build dependencies
+# 2. Install build dependencies (one-time setup)
 make build-deps
 
-# 3. Build everything
-make all
+# 3. Generate build configuration from TOML config
+# Optional: Use a profile (minimal or desktop)
+make configure
+# Or: PROFILE=desktop make configure
 
-# 4. Boot from ISO
-# The ISO will be created at: build/iso/jarvis-os-1.0.0.iso
+# 4. Build Arch Linux root filesystem
+# This creates build/arch-rootfs/ with base Arch + extra packages from config
+make rootfs-arch
+
+# 5. Install JARVIS into the rootfs
+# Creates venv, copies code, installs wrapper, sets up systemd service
+make jarvis-install-arch
+
+# 6. Install Python dependencies into JARVIS venv
+make jarvis-deps-arch
+
+# 7. Convert rootfs to QCOW2 disk image
+# Uses QEMU_DISK_GB from configs/qemu_config.mk (default: 20GB)
+USE_LOOP=1 make rootfs-qcow2
+
+# 8. Boot JARVIS OS in QEMU
+make boot-arch
 ```
 
-### **Development Build (Faster)**
+**Login credentials:**
+- Username: `root`
+- Password: `jarvis123`
+
+**Inside the VM:**
 ```bash
-# Just build JARVIS packages (no kernel)
-make dev
+# Test JARVIS CLI
+jarvis --help
+jarvis text
+jarvis ask "hello"
+
+# Check service status
+systemctl status jarvis
+
+# View logs
+journalctl -u jarvis -f
+```
+
+### **Optional: Download AI Models**
+
+If your profile has models configured:
+```bash
+# Download Vosk and Piper models into rootfs
+sudo make models
+
+# Then rebuild QCOW2 to include them
+USE_LOOP=1 make rootfs-qcow2
+```
+
+### **Customization**
+
+**Change VM resources:** Edit `configs/qemu_config.mk`
+- `QEMU_RAM` - RAM in MB (default: 2048)
+- `QEMU_CPUS` - CPU cores (default: 2)
+- `QEMU_DISK_GB` - Disk size (default: 20)
+
+**Change packages:** Edit `configs/builder.toml`
+- Add packages to `rootfs_extra_packages` in your profile
+- Run `make configure` to regenerate config
+- Rebuild rootfs: `make rootfs-arch`
+
+### **Quick Updates (Without Full Rebuild)**
+
+**Update Project-JARVIS code:**
+```bash
+git submodule update --remote Project-JARVIS
+make inject-jarvis
+make boot-arch
+```
+
+**Update Python dependencies:**
+```bash
+make inject-jarvis-deps
+make boot-arch
+```
+
+### **Legacy Build (Kernel + ISO)**
+
+For building custom kernel and ISO (not recommended for development):
+```bash
+make kernel      # Build custom kernel (30-60 min)
+make packages    # Build JARVIS packages
+make iso         # Create bootable ISO
 ```
 
 ## 🔧 **Understanding the Linux Kernel**

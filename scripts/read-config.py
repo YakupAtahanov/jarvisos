@@ -67,19 +67,22 @@ def main() -> int:
 
     lines: list[str] = []
     lines.append(f'# Generated from {toml_path} (profile="{profile_name}")')
-    lines.append(f'PROFILE := {profile_name}')
-    lines.append(f'ARCH := {arch}')
-    lines.append(f'KERNEL_VERSION := {kernel_version}')
-    lines.append(f'DISTRO_VERSION := {distro_version}')
-    lines.append(f'EXTRA_PACKAGES := {as_space_list(extra_packages)}')
-    lines.append(f'JARVIS_ENABLED := {"1" if jarvis_enabled else "0"}')
-    lines.append(f'JARVIS_MODE := {jarvis_mode}')
-    lines.append(f'LOADING_STRATEGY := {loading_strategy}')
+    # Quote string values to survive sourcing in shell (spaces, special chars)
+    def q(val: str) -> str:
+        return '"' + val.replace('"', '\\"') + '"'
+    lines.append(f'PROFILE := {q(profile_name)}')
+    lines.append(f'ARCH := {q(arch)}')
+    lines.append(f'KERNEL_VERSION := {q(kernel_version)}')
+    lines.append(f'DISTRO_VERSION := {q(distro_version)}')
+    lines.append(f'EXTRA_PACKAGES := {q(as_space_list(extra_packages))}')
+    lines.append(f'JARVIS_ENABLED := { "1" if jarvis_enabled else "0" }')
+    lines.append(f'JARVIS_MODE := {q(jarvis_mode)}')
+    lines.append(f'LOADING_STRATEGY := {q(loading_strategy)}')
     lines.append(f'BACKGROUND_PRIORITY := {background_priority}')
     lines.append(f'ACTIVE_PRIORITY := {active_priority}')
-    lines.append(f'VOSK_MODEL := {models_vosk}')
-    lines.append(f'PIPER_VOICE := {models_piper}')
-    lines.append(f'OLLAMA_MODEL := {ollama_model}')
+    lines.append(f'VOSK_MODEL := {q(models_vosk)}')
+    lines.append(f'PIPER_VOICE := {q(models_piper)}')
+    lines.append(f'OLLAMA_MODEL := {q(ollama_model)}')
     lines.append('')
 
     out_path.write_text("\n".join(lines), encoding="utf-8")

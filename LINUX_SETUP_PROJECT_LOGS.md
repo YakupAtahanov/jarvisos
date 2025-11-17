@@ -2221,3 +2221,148 @@ make boot-arch
 
 ---
 
+
+## 🚀 **Session 5: Config-Driven Builder & Complete Build Process (Nov 16, 2025)**
+
+### **Major Improvements**
+
+**1. Config-Driven Build System**
+- Added TOML-based configuration (`configs/builder.toml`)
+- Profile system: `minimal` and `desktop` profiles
+- Config generator: `scripts/read-config.py` → `build/config.mk`
+- Easy customization without editing scripts
+
+**2. QEMU Configuration**
+- Centralized QEMU settings in `configs/qemu_config.mk`
+- Easy VM resource customization (RAM, CPUs, disk size, etc.)
+- All QEMU parameters documented with defaults
+
+**3. Package Management**
+- Extra packages from config automatically installed during rootfs build
+- Fixed EXTRA_PACKAGES parsing (quotes handling)
+- PortAudio and alsa-utils now included by default
+
+**4. Python Virtual Environment**
+- JARVIS uses isolated venv at `/usr/lib/jarvis/.venv`
+- Clean dependency management
+- Both service and CLI use venv Python
+
+**5. Module Loading Fix**
+- Fixed PYTHONPATH to `/usr/lib` (not `/usr/lib/jarvis`)
+- CLI wrapper properly exports PYTHONPATH
+- Service file configured with correct environment
+
+### **Complete Build Process**
+
+**Step-by-step commands from scratch:**
+
+```bash
+# 1. Clone repository
+git clone --recursive https://github.com/YakupAtahanov/jarvisos.git
+cd jarvisos
+
+# 2. Install build dependencies (one-time)
+make build-deps
+
+# 3. Generate configuration
+make configure
+# Or use desktop profile: PROFILE=desktop make configure
+
+# 4. Build Arch Linux rootfs
+make rootfs-arch
+
+# 5. Install JARVIS (creates venv, copies code, installs wrapper)
+make jarvis-install-arch
+
+# 6. Install Python dependencies
+make jarvis-deps-arch
+
+# 7. Convert to QCOW2 disk image
+USE_LOOP=1 make rootfs-qcow2
+
+# 8. Boot JARVIS OS
+make boot-arch
+```
+
+**Login:**
+- Username: `root`
+- Password: `jarvis123`
+
+**Inside VM:**
+```bash
+# Test JARVIS
+jarvis --help
+jarvis text
+jarvis ask "hello"
+
+# Check service
+systemctl status jarvis
+journalctl -u jarvis -f
+```
+
+### **Key Files & Locations**
+
+**Configuration:**
+- `configs/builder.toml` - Build profiles and settings
+- `configs/qemu_config.mk` - QEMU VM parameters
+- `build/config.mk` - Generated build config (don't edit directly)
+
+**Build Artifacts:**
+- `build/arch-rootfs/` - Staged Arch Linux rootfs
+- `build/jarvisos-root.qcow2` - Bootable disk image
+- `build/kernel/vmlinuz-*` - Custom kernel
+- `build/initramfs.img` - Boot initramfs
+
+**Inside VM:**
+- `/usr/lib/jarvis/` - JARVIS code and venv
+- `/usr/bin/jarvis` - CLI wrapper
+- `/etc/jarvis/jarvis.conf` - Runtime configuration
+- `/etc/systemd/system/jarvis.service` - Systemd service
+
+### **Quick Updates**
+
+**Update Project-JARVIS code:**
+```bash
+git submodule update --remote Project-JARVIS
+make inject-jarvis
+make boot-arch
+```
+
+**Update Python dependencies:**
+```bash
+make inject-jarvis-deps
+make boot-arch
+```
+
+**Change VM resources:**
+Edit `configs/qemu_config.mk`, then:
+```bash
+make boot-arch
+```
+
+### **Issues Resolved**
+
+1. ✅ PortAudio library not found → Added to config, fixed EXTRA_PACKAGES parsing
+2. ✅ Module import errors → Fixed PYTHONPATH to `/usr/lib`
+3. ✅ CLI wrapper not found → Fixed wrapper creation with proper argument passing
+4. ✅ Venv not created → Improved venv creation with error handling
+5. ✅ Config not applied → Fixed Makefile to parse config.mk correctly
+
+### **Current Status (Nov 16, 2025)**
+
+✅ **Working:**
+- Complete build process from scratch
+- Config-driven package installation
+- JARVIS venv isolation
+- CLI wrapper (`jarvis` command)
+- PortAudio and audio dependencies
+- Module loading with correct PYTHONPATH
+- QEMU boot with customizable resources
+
+📋 **Next Steps:**
+- Download and configure AI models (Vosk, Piper)
+- Configure JARVIS runtime settings (`/etc/jarvis/jarvis.conf`)
+- Enable and test jarvis.service
+- Test voice activation (if models installed)
+
+---
