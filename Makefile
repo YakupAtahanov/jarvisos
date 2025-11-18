@@ -88,6 +88,8 @@ setup:
 update-submodules:
 	@echo "$(BLUE)📦 Updating submodules...$(NC)"
 	git submodule update --init --recursive
+	@echo "$(BLUE)📦 Initializing Project-JARVIS submodules...$(NC)"
+	cd Project-JARVIS && git submodule update --init --recursive || true
 	@echo "$(GREEN)✅ Submodules updated$(NC)"
 
 # Pull latest updates
@@ -267,6 +269,8 @@ jarvis-install-arch:
 		echo "$(RED)❌ Need arch-chroot or systemd-nspawn$(NC)"; \
 		exit 1; \
 	fi; \
+	echo "$(BLUE)📋 Initializing Project-JARVIS submodules...$(NC)"; \
+	(cd Project-JARVIS && git submodule update --init --recursive) || { echo "$(YELLOW)⚠️  Submodule init failed, continuing...$(NC)"; }; \
 	echo "$(BLUE)📋 Copying Project-JARVIS...$(NC)"; \
 	sudo mkdir -p $(BUILD_DIR)/arch-rootfs/usr/lib/jarvis; \
 	sudo cp -a Project-JARVIS/jarvis/* $(BUILD_DIR)/arch-rootfs/usr/lib/jarvis/; \
@@ -404,6 +408,8 @@ inject-jarvis:
 		echo "$(RED)❌ QCOW2 image not found. Build it first$(NC)"; \
 		exit 1; \
 	fi
+	@echo "$(BLUE)📋 Initializing Project-JARVIS submodules...$(NC)"; \
+	(cd Project-JARVIS && git submodule update --init --recursive) || { echo "$(YELLOW)⚠️  Submodule init failed, continuing...$(NC)"; }; \
 	@# Copy code
 	virt-copy-in -a $(BUILD_DIR)/jarvisos-root.qcow2 Project-JARVIS/jarvis /usr/lib/
 	virt-copy-in -a $(BUILD_DIR)/jarvisos-root.qcow2 Project-JARVIS/requirements.txt /usr/lib/jarvis/
