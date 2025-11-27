@@ -29,4 +29,33 @@ models_vosk = "vosk-model-small-en-us-0.15"
 models_piper_voice = "en_US-libritts_r-medium"
 ollama_model = "codegemma:7b-instruct-q5_K_M"
 
+[profiles.gui-iso]
+description = "GUI-enabled ISO build with KDE Plasma, Calamares, and JARVIS"
+rootfs_extra_packages = [
+    # Desktop Environment
+    "plasma-meta", "sddm",
+    "wayland", "xorg-xwayland", "mesa",
+    "pipewire", "pipewire-pulse", "pipewire-jack", "wireplumber",
+    
+    # Installer
+    "calamares",
+    
+    # Applications
+    "firefox", "konsole", "dolphin",
+    
+    # Dependencies
+    "python-flask", "python-flask-socketio",
+    "ttf-dejavu", "noto-fonts", "noto-fonts-emoji"
+]
+jarvis_enabled = true
+jarvis_mode = "voice"
+loading_strategy = "background"
+background_priority = 15
+active_priority = 0
+models_vosk = ""
+models_piper_voice = ""
+ollama_model = ""
+gui_enabled = true
+gui_desktop = "plasma-wayland"
+
 

@@ -62,6 +62,11 @@ help:
 	@echo "  $(GREEN)boot-arch$(NC)        - Boot JARVIS OS in QEMU"
 	@echo "  $(GREEN)models$(NC)           - Download models (Vosk/Piper) into rootfs based on config"
 	@echo ""
+	@echo "$(BLUE)ISO Injection:$(NC)"
+	@echo "  $(GREEN)inject-iso$(NC)      - Inject JARVIS + GUI + Calamares into ISO (ISO_FILE=path)"
+	@echo "  $(GREEN)build-iso$(NC)        - Build complete JARVIS OS ISO (configure + inject)"
+	@echo "  $(GREEN)iso-gui$(NC)          - Quick build with GUI profile"
+	@echo ""
 	@echo "$(BLUE)Utilities:$(NC)"
 	@echo "  $(GREEN)clean$(NC)            - Clean all build artifacts"
 	@echo "  $(GREEN)update-submodules$(NC) - Update all submodules"
@@ -119,7 +124,8 @@ build-deps:
 	sudo $$PKG -y install rpm-build createrepo_c; \
 	sudo $$PKG -y install genisoimage xorriso; \
 	sudo $$PKG -y install python3 python3-pip; \
-	sudo $$PKG -y install arch-install-scripts libguestfs-tools-c qemu-kvm qemu-img
+	sudo $$PKG -y install arch-install-scripts libguestfs-tools-c qemu-kvm qemu-img; \
+	sudo $$PKG -y install squashfs-tools xorriso p7zip
 	@echo "$(GREEN)✅ Build dependencies installed$(NC)"
 
 # Build kernel
@@ -428,3 +434,34 @@ inject-jarvis-deps:
 		--run-command 'bash -lc "cd /usr/lib/jarvis && PIP_BREAK_SYSTEM_PACKAGES=1 pip install --break-system-packages -r requirements.txt"' || \
 		{ echo "$(YELLOW)⚠️  virt-customize failed; ensure libguestfs-tools-c is installed$(NC)"; exit 1; }
 	@echo "$(GREEN)✅ Dependencies installed inside QCOW2$(NC)"
+
+# ------------------------------------------------------------
+# ISO Injection Targets
+# Inject JARVIS + GUI + Calamares into Arch Linux ISO
+# ------------------------------------------------------------
+
+# Inject JARVIS OS components into ISO
+inject-iso:
+	@echo "$(BLUE)💿 Injecting JARVIS OS components into ISO...$(NC)"
+	@if [ -z "$(ISO_FILE)" ]; then \
+		echo "$(RED)❌ ISO_FILE not specified. Usage: make inject-iso ISO_FILE=archlinux-2025.11.01-x86_64.iso$(NC)"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(ISO_FILE)" ]; then \
+		echo "$(RED)❌ ISO file not found: $(ISO_FILE)$(NC)"; \
+		exit 1; \
+	fi
+	@./scripts/inject-jarvis-iso.sh "$(ISO_FILE)" "$(BUILD_DIR)"
+	@echo "$(GREEN)✅ ISO injection complete$(NC)"
+
+# Build complete JARVIS OS ISO (configure + inject)
+build-iso: configure inject-iso
+	@echo "$(GREEN)🎉 JARVIS OS ISO ready!$(NC)"
+	@echo "$(BLUE)📦 ISO location: $(BUILD_DIR)/jarvisos-*-x86_64.iso$(NC)"
+	@echo "$(YELLOW)💡 Test with: qemu-system-x86_64 -cdrom \$$(ls -t $(BUILD_DIR)/jarvisos-*-x86_64.iso | head -1) -m 2048 -display sdl$(NC)"
+
+# Quick ISO build with GUI profile
+iso-gui: configure
+	@echo "$(BLUE)💿 Building JARVIS OS ISO with GUI profile...$(NC)"
+	@$(MAKE) inject-iso ISO_FILE=archlinux-2025.11.01-x86_64.iso PROFILE=gui-iso
+	@echo "$(GREEN)✅ GUI ISO build complete$(NC)"
