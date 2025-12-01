@@ -21,7 +21,7 @@ fi
 # Construct paths from build.config (paths starting with / are relative to PROJECT_ROOT)
 SCRIPTS_DIR="${PROJECT_ROOT}${SCRIPTS_DIR}"
 BUILD_DIR="${PROJECT_ROOT}${BUILD_DIR}"
-ISO_EXTRACT_DIR="${PROJECT_ROOT}${ISO_EXTRACT_DIR}"
+ISO_EXTRACT_DIR="${BUILD_DIR}${ISO_EXTRACT_DIR}"
 
 # Colors
 RED='\033[0;31m'

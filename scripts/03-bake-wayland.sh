@@ -111,7 +111,16 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm mesa vulkan-intel vu
 
 # Audio stack (PipeWire)
 echo -e "${BLUE}Installing audio stack...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm pipewire pipewire-alsa pipewire-pulse pipewire-jack wireplumber
+echo -e "${BLUE}Installing audio stack (PipeWire)...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    # Install pipewire-jack which will prompt to replace jack2
+    # 'yes' command auto-answers the prompt
+    yes | pacman -S --needed pipewire pipewire-alsa pipewire-pulse pipewire-jack wireplumber || {
+        echo 'Retrying with force...'
+        pacman -Rdd --noconfirm jack2  # Remove without checking deps
+        pacman -S --noconfirm pipewire pipewire-alsa pipewire-pulse pipewire-jack wireplumber
+    }
+"
 
 # Cursor themes
 echo -e "${BLUE}Installing cursor themes...${NC}"
