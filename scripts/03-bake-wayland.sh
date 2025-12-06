@@ -150,12 +150,35 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm firefox konsole dolp
 echo -e "${BLUE}Installing input drivers...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm libinput xf86-input-libinput
 
-# Step 6: Enable services
+# Step 6: Ensure root user setup for autologin
+echo -e "${BLUE}Setting up root user for autologin...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    # Ensure root has a home directory
+    if [ ! -d /root ]; then
+        mkdir -p /root
+        chmod 700 /root
+    fi
+    
+    # Create basic shell config files if they don't exist
+    if [ ! -f /root/.bashrc ]; then
+        cp /etc/skel/.bashrc /root/.bashrc 2>/dev/null || true
+    fi
+    if [ ! -f /root/.bash_profile ]; then
+        cp /etc/skel/.bash_profile /root/.bash_profile 2>/dev/null || true
+    fi
+    
+    # Ensure root can login (check passwd entry)
+    if ! getent passwd root >/dev/null 2>&1; then
+        echo 'Warning: root user not found in passwd'
+    fi
+" 2>&1 | grep -vE "WARNING.*mountpoint" || true
+
+# Step 7: Enable services
 echo -e "${BLUE}Enabling services...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable sddm
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager
 
-# Step 7: Configure SDDM autologin for live boot
+# Step 8: Configure SDDM autologin for live boot
 echo -e "${BLUE}Configuring SDDM autologin for live boot...${NC}"
 
 # Create SDDM configuration directory
@@ -165,7 +188,7 @@ sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/sddm.conf.d"
 sudo tee "${SQUASHFS_ROOTFS}/etc/sddm.conf.d/autologin.conf" > /dev/null << 'EOF'
 [Autologin]
 User=root
-Session=plasma-wayland
+Session=plasma
 
 [General]
 DisplayServer=wayland
@@ -183,7 +206,7 @@ EOF
 
 echo -e "${GREEN}✓ SDDM autologin configured for root user with Wayland session${NC}"
 
-# Step 8: Cleanup inside chroot
+# Step 9: Cleanup inside chroot
 echo -e "${BLUE}Cleaning up package cache and temporary files...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Scc --noconfirm
 sudo arch-chroot "${SQUASHFS_ROOTFS}" sh -c "rm -rf /tmp/* /var/cache/pacman/pkg/*"
