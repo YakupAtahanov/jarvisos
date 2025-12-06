@@ -6,6 +6,8 @@ __pycache__/
 # C extensions
 *.so
 
+build.config
+
 archlinux-2025.11.01-x86_64.iso
 
 # Distribution / packaging
