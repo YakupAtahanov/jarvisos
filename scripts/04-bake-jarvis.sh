@@ -215,7 +215,9 @@ else
     echo "Warning: Virtual environment not found at ${VENV_PATH}" >&2
 fi
 
-export PYTHONPATH="${JARVIS_PATH}"
+# Set PYTHONPATH to /usr/lib so Python can find the jarvis module
+# The jarvis module is at /usr/lib/jarvis/, so PYTHONPATH should be /usr/lib
+export PYTHONPATH="/usr/lib:${PYTHONPATH}"
 cd "${JARVIS_PATH}"
 python -m jarvis.cli "$@"
 EOF
@@ -250,7 +252,8 @@ if VENV_PATH.exists():
             sys.path.insert(0, str(venv_site))
 
 # Add JARVIS to Python path
-sys.path.insert(0, '/usr/lib/jarvis')
+# The jarvis module is at /usr/lib/jarvis/, so add /usr/lib to path
+sys.path.insert(0, '/usr/lib')
 
 from jarvis.main import Jarvis
 from jarvis.config import Config
