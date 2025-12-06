@@ -107,7 +107,7 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-meta kde-appl
 
 # Graphics drivers
 echo -e "${BLUE}Installing graphics drivers...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm mesa vulkan-intel vulkan-radeon libva-mesa-driver mesa-vdpau
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm mesa vulkan-intel vulkan-radeon libva-mesa-driver
 
 # Audio stack (PipeWire)
 echo -e "${BLUE}Installing audio stack...${NC}"
