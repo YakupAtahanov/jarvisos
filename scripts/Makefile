@@ -36,8 +36,8 @@ help:
 	@echo "  $(GREEN)make step1$(NC)  - Extract ISO"
 	@echo "  $(GREEN)make step2$(NC)  - Unsquash filesystem"
 	@echo "  $(GREEN)make step3$(NC)  - Bake Wayland"
-	@echo "  $(GREEN)make step4$(NC)  - Bake Calamares"
-	@echo "  $(GREEN)make step5$(NC)  - Bake JARVIS"
+	@echo "  $(GREEN)make step4$(NC)  - Bake JARVIS"
+	@echo "  $(GREEN)make step5$(NC)  - Bake Calamares (optional, not implemented yet)"
 	@echo "  $(GREEN)make step6$(NC)  - Rebuild SquashFS"
 	@echo "  $(GREEN)make step7$(NC)  - Rebuild ISO"
 	@echo ""
@@ -117,24 +117,24 @@ step3:
 	@bash $(SCRIPTS_DIR)/03-bake-wayland.sh $(BUILD_DIR)
 	@echo "$(GREEN)✓ Step 3 complete$(NC)"
 
-# Step 4: Bake Calamares
+# Step 4: Bake JARVIS
 step4:
-	@echo "$(BLUE)Step 4: Baking Calamares...$(NC)"
-	@if [ ! -f "$(SCRIPTS_DIR)/04-bake-calamares.sh" ]; then \
-		echo "$(RED)Error: Script not found: 04-bake-calamares.sh$(NC)"; \
+	@echo "$(BLUE)Step 4: Baking JARVIS...$(NC)"
+	@if [ ! -f "$(SCRIPTS_DIR)/04-bake-jarvis.sh" ]; then \
+		echo "$(RED)Error: Script not found: 04-bake-jarvis.sh$(NC)"; \
 		exit 1; \
 	fi
-	@bash $(SCRIPTS_DIR)/04-bake-calamares.sh $(BUILD_DIR)
+	@bash $(SCRIPTS_DIR)/04-bake-jarvis.sh $(BUILD_DIR)
 	@echo "$(GREEN)✓ Step 4 complete$(NC)"
 
-# Step 5: Bake JARVIS
+# Step 5: Bake Calamares
 step5:
-	@echo "$(BLUE)Step 5: Baking JARVIS...$(NC)"
-	@if [ ! -f "$(SCRIPTS_DIR)/05-bake-jarvis.sh" ]; then \
-		echo "$(RED)Error: Script not found: 05-bake-jarvis.sh$(NC)"; \
+	@echo "$(BLUE)Step 5: Baking Calamares...$(NC)"
+	@if [ ! -f "$(SCRIPTS_DIR)/05-bake-calamares.sh" ]; then \
+		echo "$(RED)Error: Script not found: 05-bake-calamares.sh$(NC)"; \
 		exit 1; \
 	fi
-	@bash $(SCRIPTS_DIR)/05-bake-jarvis.sh $(BUILD_DIR)
+	@bash $(SCRIPTS_DIR)/05-bake-calamares.sh $(BUILD_DIR)
 	@echo "$(GREEN)✓ Step 5 complete$(NC)"
 
 # Step 6: Rebuild SquashFS

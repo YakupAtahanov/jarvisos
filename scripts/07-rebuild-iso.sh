@@ -64,6 +64,15 @@ echo -e "${BLUE}Output: ${OUTPUT_ISO_ABS}${NC}"
 # Change to ISO extract directory
 cd "${ISO_EXTRACT_DIR}" || exit 1
 
+# Remove existing ISO if it exists (might be locked or corrupted)
+if [ -f "${OUTPUT_ISO_ABS}" ]; then
+    echo -e "${YELLOW}Removing existing ISO file...${NC}"
+    rm -f "${OUTPUT_ISO_ABS}" || {
+        echo -e "${RED}Error: Cannot remove existing ISO file. It may be in use.${NC}" >&2
+        exit 1
+    }
+fi
+
 # Find boot files (Arch ISO uses boot/syslinux/ structure)
 ISOLINUX_BIN=""
 ISOHDPFX_BIN=""
@@ -160,17 +169,32 @@ if [ -n "${ISOLINUX_BIN}" ] && [ -n "${ISOHDPFX_BIN}" ] && [ -n "${EFI_IMG}" ] &
         . 2>&1)
     
     XORRISO_EXIT=$?
-    echo "${XORRISO_OUTPUT}" | grep -vE "^xorriso|^libisofs|^Drive current|^Media current|^Media status|^Media summary|^Added to ISO" || true
     
     if [ ${XORRISO_EXIT} -ne 0 ]; then
         echo -e "${RED}Error: xorriso failed with exit code ${XORRISO_EXIT}${NC}" >&2
-        echo -e "${YELLOW}Full error output:${NC}"
-        echo "${XORRISO_OUTPUT}" | grep -E "error|Error|ERROR|fail|Fail|FAIL" || echo "${XORRISO_OUTPUT}"
+        echo -e "${YELLOW}Full xorriso output:${NC}"
+        echo "${XORRISO_OUTPUT}"
+        echo ""
+        echo -e "${YELLOW}Troubleshooting:${NC}"
+        echo "  - Check if output directory exists: $(dirname "${OUTPUT_ISO_ABS}")"
+        echo "  - Check disk space: df -h $(dirname "${OUTPUT_ISO_ABS}")"
+        echo "  - Check if boot files are valid"
         exit 1
     fi
+    
+    # Show filtered output on success
+    echo "${XORRISO_OUTPUT}" | grep -vE "^xorriso|^libisofs|^Drive current|^Media current|^Media status|^Media summary|^Added to ISO" | tail -20 || true
 elif [ -n "${ISOLINUX_BIN}" ] && [ -n "${ISOHDPFX_BIN}" ]; then
     # BIOS boot only
     echo -e "${BLUE}Using BIOS boot structure (UEFI boot files not found)...${NC}"
+    
+    # Ensure output directory exists
+    OUTPUT_DIR=$(dirname "${OUTPUT_ISO_ABS}")
+    mkdir -p "${OUTPUT_DIR}" || {
+        echo -e "${RED}Error: Cannot create output directory: ${OUTPUT_DIR}${NC}" >&2
+        exit 1
+    }
+    
     XORRISO_OUTPUT=$(xorriso -as mkisofs \
         -iso-level 3 \
         -full-iso9660-filenames \
@@ -183,14 +207,21 @@ elif [ -n "${ISOLINUX_BIN}" ] && [ -n "${ISOHDPFX_BIN}" ]; then
         . 2>&1)
     
     XORRISO_EXIT=$?
-    echo "${XORRISO_OUTPUT}" | grep -vE "^xorriso|^libisofs|^Drive current|^Media current|^Media status|^Media summary|^Added to ISO" || true
     
     if [ ${XORRISO_EXIT} -ne 0 ]; then
         echo -e "${RED}Error: xorriso failed with exit code ${XORRISO_EXIT}${NC}" >&2
-        echo -e "${YELLOW}Full error output:${NC}"
-        echo "${XORRISO_OUTPUT}" | grep -E "error|Error|ERROR|fail|Fail|FAIL" || echo "${XORRISO_OUTPUT}"
+        echo -e "${YELLOW}Full xorriso output:${NC}"
+        echo "${XORRISO_OUTPUT}"
+        echo ""
+        echo -e "${YELLOW}Troubleshooting:${NC}"
+        echo "  - Output directory: ${OUTPUT_DIR}"
+        echo "  - Disk space: $(df -h "${OUTPUT_DIR}" | tail -1 | awk '{print $4 " available"}')"
+        echo "  - Boot files: ${ISOLINUX_BIN}, ${ISOHDPFX_BIN}"
         exit 1
     fi
+    
+    # Show filtered output on success
+    echo "${XORRISO_OUTPUT}" | grep -vE "^xorriso|^libisofs|^Drive current|^Media current|^Media status|^Media summary|^Added to ISO" | tail -20 || true
 else
     echo -e "${RED}Error: Insufficient boot files found${NC}" >&2
     exit 1

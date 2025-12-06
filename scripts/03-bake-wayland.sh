@@ -155,19 +155,33 @@ echo -e "${BLUE}Enabling services...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable sddm
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager
 
-# Step 7: Create jarvis user
-echo -e "${BLUE}Creating jarvis user...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" useradd -m -G wheel,audio,video,storage,network,input,optical -s /bin/bash jarvis || {
-    echo -e "${YELLOW}Warning: User jarvis may already exist${NC}"
-}
+# Step 7: Configure SDDM autologin for live boot
+echo -e "${BLUE}Configuring SDDM autologin for live boot...${NC}"
 
-# Set password to "jarvis"
-echo -e "${BLUE}Setting password for jarvis user...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" sh -c 'echo "jarvis:jarvis" | chpasswd'
+# Create SDDM configuration directory
+sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/sddm.conf.d"
 
-# Enable sudo for wheel group
-echo -e "${BLUE}Enabling sudo for wheel group...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+# Configure autologin as root for live boot
+sudo tee "${SQUASHFS_ROOTFS}/etc/sddm.conf.d/autologin.conf" > /dev/null << 'EOF'
+[Autologin]
+User=root
+Session=plasma-wayland
+
+[General]
+DisplayServer=wayland
+Numlock=on
+
+[Wayland]
+SessionCommand=/usr/share/sddm/scripts/wayland-session
+SessionDir=/usr/share/wayland-sessions
+
+[X11]
+DisplayCommand=/usr/share/sddm/scripts/Xsetup
+SessionCommand=/usr/share/sddm/scripts/Xsession
+SessionDir=/usr/share/xsessions
+EOF
+
+echo -e "${GREEN}✓ SDDM autologin configured for root user with Wayland session${NC}"
 
 # Step 8: Cleanup inside chroot
 echo -e "${BLUE}Cleaning up package cache and temporary files...${NC}"

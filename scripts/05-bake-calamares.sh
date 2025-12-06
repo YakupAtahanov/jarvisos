@@ -1,6 +1,6 @@
 #!/bin/bash
-# Step 4: Bake in Calamares installer
-# Installs and configures Calamares installer into the rootfs
+# Step 4: Bake in Project-JARVIS
+# Installs Project-JARVIS code, dependencies, and services into the rootfs
 
 set -e
 
@@ -30,5 +30,5 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# TODO: Implement Calamares installation logic
-echo -e "${YELLOW}Step 4: Bake Calamares - Not yet implemented${NC}"
+# TODO: Install Calamares into the rootfs
+echo -e "${YELLOW}Step 5: Bake Calamares - Not yet implemented${NC}"

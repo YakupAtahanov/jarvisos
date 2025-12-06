@@ -1,5 +1,5 @@
 #!/bin/bash
-# Step 5: Bake in Project-JARVIS
+# Step 4: Bake in Project-JARVIS
 # Installs Project-JARVIS code, dependencies, and services into the rootfs
 
 set -e
@@ -31,4 +31,4 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # TODO: Implement JARVIS installation logic
-echo -e "${YELLOW}Step 5: Bake JARVIS - Not yet implemented${NC}"
+echo -e "${YELLOW}Step 4: Bake JARVIS - Not yet implemented${NC}"
