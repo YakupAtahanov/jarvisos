@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: no
+# SPDX-License-Identifier: CC0-1.0
+---
+componentName: jarvisos
+
+strings:
+  productName: "JARVIS OS"
+  shortProductName: "JARVIS"
+  version: "2025.1"
+  shortVersion: "2025.1"
+  versionedName: "JARVIS OS 2025.1"
+  shortVersionedName: "JARVIS 2025.1"
+  bootloaderEntryName: "JARVIS"
+  productUrl: "https://github.com/ChatGPT-based-AI/JARVIS-OS"
+
+images:
+  productLogo: ""
+  productIcon: ""
+  productWelcome: ""
+
+slideshow: ""
+
+style:
+  SidebarBackground: "#292929"
+  SidebarText: "#FFFFFF"
+  SidebarTextCurrent: "#4CAF50"
+
+
