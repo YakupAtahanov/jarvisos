@@ -87,14 +87,53 @@ trap cleanup EXIT
 
 # Step 3: Initialize pacman keyring
 echo -e "${BLUE}Initializing pacman keyring...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --init
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --populate archlinux
+if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --init 2>&1; then
+    echo -e "${YELLOW}Warning: pacman-key --init had issues, continuing...${NC}"
+fi
 
-# Step 4: Update system and fix dependencies
+if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --populate archlinux 2>&1; then
+    echo -e "${RED}Error: Failed to populate archlinux keyring${NC}" >&2
+    exit 1
+fi
+
+# Refresh keyring to get latest keys from keyservers
+echo -e "${BLUE}Refreshing keyring from keyservers (this may take a moment)...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "pacman-key --refresh-keys 2>&1 | head -20" || {
+    echo -e "${YELLOW}Warning: Key refresh had issues, but continuing...${NC}"
+}
+
+# Update archlinux-keyring package to ensure we have latest keys
+# This is important as it contains the most up-to-date keys
+echo -e "${BLUE}Updating archlinux-keyring package...${NC}"
+if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Sy archlinux-keyring --noconfirm 2>&1; then
+    echo -e "${YELLOW}Warning: Could not update keyring package, trying to continue...${NC}"
+    # Try to refresh keys again after attempting to update
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --refresh-keys 2>&1 | head -10 || true
+fi
+
+# Re-populate after updating keyring package
+echo -e "${BLUE}Re-populating keyring after update...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --populate archlinux 2>&1 || {
+    echo -e "${YELLOW}Warning: Re-population had issues, but continuing...${NC}"
+}
+
+# Step 4: Clean package cache to remove any corrupted packages
+echo -e "${BLUE}Cleaning package cache...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "rm -rf /var/cache/pacman/pkg/*.pkg.tar.* 2>/dev/null || true"
+
+# Step 5: Update system and fix dependencies
 echo -e "${BLUE}Updating system packages (this may take a while)...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Syu --noconfirm 2>&1
+if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Syu --noconfirm 2>&1; then
+    echo -e "${YELLOW}First update attempt failed, cleaning cache and retrying...${NC}"
+    # Clean cache again and retry
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "rm -rf /var/cache/pacman/pkg/*.pkg.tar.* 2>/dev/null || true"
+    # Refresh keys one more time
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --refresh-keys 2>&1 | head -10 || true
+    # Retry update
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Syu --noconfirm 2>&1
+fi
 
-# Step 5: Install GUI packages in groups
+# Step 6: Install GUI packages in groups
 echo -e "${BLUE}Installing GUI packages...${NC}"
 
 # Wayland core
@@ -150,7 +189,7 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm firefox konsole dolp
 echo -e "${BLUE}Installing input drivers...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm libinput xf86-input-libinput
 
-# Step 6: Ensure root user setup for autologin
+# Step 7: Ensure root user setup for autologin
 echo -e "${BLUE}Setting up root user for autologin...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     # Ensure root has a home directory
@@ -173,12 +212,12 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     fi
 " 2>&1 | grep -vE "WARNING.*mountpoint" || true
 
-# Step 7: Enable services
+# Step 8: Enable services
 echo -e "${BLUE}Enabling services...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable sddm
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager
 
-# Step 8: Configure SDDM autologin for live boot
+# Step 9: Configure SDDM autologin for live boot
 echo -e "${BLUE}Configuring SDDM autologin for live boot...${NC}"
 
 # Create SDDM configuration directory
@@ -206,7 +245,7 @@ EOF
 
 echo -e "${GREEN}✓ SDDM autologin configured for root user with Wayland session${NC}"
 
-# Step 9: Cleanup inside chroot
+# Step 10: Cleanup inside chroot
 echo -e "${BLUE}Cleaning up package cache and temporary files...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Scc --noconfirm
 sudo arch-chroot "${SQUASHFS_ROOTFS}" sh -c "rm -rf /tmp/* /var/cache/pacman/pkg/*"
