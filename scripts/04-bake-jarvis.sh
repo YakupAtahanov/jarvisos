@@ -176,28 +176,65 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" chown -R jarvis:jarvis /usr/lib/jarvis
 
 # Step 8: Install Python dependencies in virtual environment
 echo -e "${BLUE}Installing Python dependencies...${NC}"
+
+# First verify requirements.txt was copied
+if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" test -f /usr/lib/jarvis/requirements.txt; then
+    echo -e "${RED}ERROR: requirements.txt not found at /usr/lib/jarvis/requirements.txt${NC}" >&2
+    exit 1
+fi
+
+echo -e "${BLUE}Requirements.txt contents:${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" cat /usr/lib/jarvis/requirements.txt
+
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    set -e  # Exit on any error
+    
     cd /var/lib/jarvis
     
     # Create virtual environment
+    echo 'Creating virtual environment...'
     python3 -m venv venv
     
     # Activate venv and install dependencies
     source venv/bin/activate
     
-    # Upgrade pip
-    pip install --upgrade pip --quiet
+    # Upgrade pip first
+    echo 'Upgrading pip...'
+    pip install --upgrade pip
     
-    # Install dependencies from requirements.txt
-    pip install -r /usr/lib/jarvis/requirements.txt --quiet || {
-        echo 'Warning: Some dependencies may have failed to install'
-    }
+    # Install dependencies with verbose output
+    echo 'Installing dependencies from requirements.txt...'
+    pip install -r /usr/lib/jarvis/requirements.txt --verbose
+    
+    # Verify critical packages were installed
+    echo 'Verifying installations...'
+    python -c 'import dotenv; print(\"✓ dotenv installed\")'
+    python -c 'import ollama; print(\"✓ ollama installed\")'
+    python -c 'import vosk; print(\"✓ vosk installed\")'
+    
+    # Show installed package count
+    PACKAGE_COUNT=\$(pip list | wc -l)
+    echo \"Total packages installed: \${PACKAGE_COUNT}\"
+    
+    if [ \${PACKAGE_COUNT} -lt 20 ]; then
+        echo 'ERROR: Too few packages installed, something went wrong'
+        exit 1
+    fi
     
     deactivate
     
     # Set ownership
     chown -R jarvis:jarvis venv
+    
+    echo '✓ All dependencies installed successfully'
 "
+
+if [ $? -ne 0 ]; then
+    echo -e "${RED}ERROR: Failed to install Python dependencies${NC}" >&2
+    exit 1
+fi
+
+echo -e "${GREEN}✓ Python dependencies installed successfully${NC}"
 
 # Step 9: Create jarvis CLI wrapper script
 echo -e "${BLUE}Creating jarvis CLI wrapper...${NC}"

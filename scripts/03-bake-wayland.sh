@@ -217,6 +217,25 @@ echo -e "${BLUE}Enabling services...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable sddm
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager
 
+# Step 8.5: Enable PipeWire audio services for root user (autologin)
+echo -e "${BLUE}Enabling PipeWire audio services for root user...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    # Enable PipeWire services globally
+    systemctl --user --global enable pipewire.service
+    systemctl --user --global enable pipewire-pulse.service
+    systemctl --user --global enable wireplumber.service
+    
+    # Create root user systemd directory
+    mkdir -p /root/.config/systemd/user/default.target.wants
+    
+    # Create symlinks for root user (autologin)
+    ln -sf /usr/lib/systemd/user/pipewire.service /root/.config/systemd/user/default.target.wants/ 2>/dev/null || true
+    ln -sf /usr/lib/systemd/user/pipewire-pulse.service /root/.config/systemd/user/default.target.wants/ 2>/dev/null || true
+    ln -sf /usr/lib/systemd/user/wireplumber.service /root/.config/systemd/user/default.target.wants/ 2>/dev/null || true
+"
+
+echo -e "${GREEN}✓ PipeWire audio services enabled${NC}"
+
 # Step 9: Configure SDDM autologin for live boot
 echo -e "${BLUE}Configuring SDDM autologin for live boot...${NC}"
 
