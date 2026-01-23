@@ -174,6 +174,22 @@ sudo cp "${PROJECT_JARVIS}/requirements.txt" "${SQUASHFS_ROOTFS}/usr/lib/jarvis/
 # Chown inside chroot (user exists there)
 sudo arch-chroot "${SQUASHFS_ROOTFS}" chown -R jarvis:jarvis /usr/lib/jarvis
 
+# Verify SuperMCP was copied correctly
+echo -e "${BLUE}Verifying SuperMCP installation...${NC}"
+if [ ! -d "${SQUASHFS_ROOTFS}/usr/lib/jarvis/SuperMCP" ]; then
+    echo -e "${RED}ERROR: SuperMCP directory not found after copy${NC}" >&2
+    echo -e "${YELLOW}Expected: ${SQUASHFS_ROOTFS}/usr/lib/jarvis/SuperMCP${NC}" >&2
+    exit 1
+fi
+
+if [ ! -f "${SQUASHFS_ROOTFS}/usr/lib/jarvis/SuperMCP/SuperMCP.py" ]; then
+    echo -e "${RED}ERROR: SuperMCP.py not found after copy${NC}" >&2
+    echo -e "${YELLOW}Expected: ${SQUASHFS_ROOTFS}/usr/lib/jarvis/SuperMCP/SuperMCP.py${NC}" >&2
+    exit 1
+fi
+
+echo -e "${GREEN}✓ SuperMCP verified successfully${NC}"
+
 # Step 8: Install Python dependencies in virtual environment
 echo -e "${BLUE}Installing Python dependencies...${NC}"
 

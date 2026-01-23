@@ -85,6 +85,26 @@ cleanup() {
 # Trap to ensure cleanup on exit
 trap cleanup EXIT
 
+# Function to check if pacman-key refresh is needed (48-hour interval)
+should_refresh_keys() {
+    local timestamp_file="${BUILD_DIR}/.pacman-key-refresh-timestamp"
+    local refresh_interval=172800  # 48 hours in seconds
+    
+    if [ ! -f "${timestamp_file}" ]; then
+        return 0  # Refresh needed
+    fi
+    
+    local last_refresh=$(stat -c %Y "${timestamp_file}" 2>/dev/null || echo 0)
+    local current_time=$(date +%s)
+    local time_diff=$((current_time - last_refresh))
+    
+    if [ $time_diff -gt $refresh_interval ]; then
+        return 0  # Refresh needed
+    fi
+    
+    return 1  # No refresh needed
+}
+
 # Step 3: Initialize pacman keyring
 echo -e "${BLUE}Initializing pacman keyring...${NC}"
 if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --init 2>&1; then
@@ -96,19 +116,32 @@ if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --populate archlinux 2>&1;
     exit 1
 fi
 
-# Refresh keyring to get latest keys from keyservers
-echo -e "${BLUE}Refreshing keyring from keyservers (this may take a moment)...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "pacman-key --refresh-keys 2>&1 | head -20" || {
-    echo -e "${YELLOW}Warning: Key refresh had issues, but continuing...${NC}"
-}
+# Refresh keyring to get latest keys from keyservers (only if >48 hours since last refresh)
+TIMESTAMP_FILE="${BUILD_DIR}/.pacman-key-refresh-timestamp"
+if should_refresh_keys; then
+    echo -e "${BLUE}Refreshing keyring from keyservers (this may take a moment)...${NC}"
+    if sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "pacman-key --refresh-keys 2>&1 | head -20"; then
+        # Update timestamp file on successful refresh
+        touch "${TIMESTAMP_FILE}" 2>/dev/null || true
+        echo -e "${GREEN}✓ Keyring refreshed successfully${NC}"
+    else
+        echo -e "${YELLOW}Warning: Key refresh had issues, but continuing...${NC}"
+    fi
+else
+    LAST_REFRESH=$(stat -c %Y "${TIMESTAMP_FILE}" 2>/dev/null || echo 0)
+    HOURS_AGO=$(( ($(date +%s) - LAST_REFRESH) / 3600 ))
+    echo -e "${BLUE}Skipping keyring refresh (last refreshed ${HOURS_AGO} hours ago, <48 hours)${NC}"
+fi
 
 # Update archlinux-keyring package to ensure we have latest keys
 # This is important as it contains the most up-to-date keys
 echo -e "${BLUE}Updating archlinux-keyring package...${NC}"
 if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Sy archlinux-keyring --noconfirm 2>&1; then
     echo -e "${YELLOW}Warning: Could not update keyring package, trying to continue...${NC}"
-    # Try to refresh keys again after attempting to update
-    sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --refresh-keys 2>&1 | head -10 || true
+    # Only refresh keys if we haven't refreshed recently (avoid redundant refresh)
+    if should_refresh_keys; then
+        sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --refresh-keys 2>&1 | head -10 || true
+    fi
 fi
 
 # Re-populate after updating keyring package

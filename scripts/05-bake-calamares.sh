@@ -161,6 +161,44 @@ if [ "${CALAMARES_INSTALLED}" != "true" ]; then
     sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
         set -e
         
+        # Function to find Calamares package (main package, not debug)
+        find_calamares_package() {
+            local build_dir=\"\$1\"
+            
+            # Try to find main package excluding debug versions
+            local main_pkg=\$(find \"\${build_dir}\" -maxdepth 1 -name 'calamares-git-*.pkg.tar.zst' -type f ! -name '*debug*' ! -name '*-debug-*' | head -1)
+            
+            # If not found, try without strict version pattern
+            if [ -z \"\${main_pkg}\" ]; then
+                main_pkg=\$(ls -1 \"\${build_dir}\"/calamares-git-*.pkg.tar.zst 2>/dev/null | grep -v debug | head -1)
+            fi
+            
+            # If still not found, check all packages
+            if [ -z \"\${main_pkg}\" ]; then
+                local all_pkgs=\$(ls -1 \"\${build_dir}\"/*.pkg.tar.zst 2>/dev/null)
+                local pkg_count=\$(echo \"\${all_pkgs}\" | wc -l)
+                
+                if [ \"\${pkg_count}\" -eq 1 ]; then
+                    # Only one package - use it
+                    main_pkg=\$(echo \"\${all_pkgs}\" | head -1)
+                elif [ \"\${pkg_count}\" -gt 1 ]; then
+                    # Multiple packages - find the one that's NOT debug
+                    main_pkg=\$(echo \"\${all_pkgs}\" | grep -v debug | head -1)
+                    if [ -z \"\${main_pkg}\" ]; then
+                        echo 'ERROR: Only debug packages found!' >&2
+                        echo 'Available packages:' >&2
+                        echo \"\${all_pkgs}\" >&2
+                        return 1
+                    fi
+                else
+                    echo 'ERROR: No packages found!' >&2
+                    return 1
+                fi
+            fi
+            
+            echo \"\${main_pkg}\"
+        }
+        
         # Install build dependencies
         echo 'Installing build dependencies...'
         pacman -S --noconfirm --needed base-devel git cmake extra-cmake-modules ninja || exit 1
@@ -208,61 +246,18 @@ if [ "${CALAMARES_INSTALLED}" != "true" ]; then
         echo 'Building calamares-git package (this may take 5-10 minutes)...'
         BUILD_SUCCESS=false
         if runuser -u nobody -- bash -c 'cd /tmp/calamares-git && makepkg --noconfirm --skipinteg --nocheck 2>&1'; then
-            # Find the built packages - we need the main package, not the debug one
-            # Look for calamares-git (not calamares-git-debug) first
-            PKGFILE=\$(find /tmp/calamares-git -maxdepth 1 -name 'calamares-git-*.pkg.tar.zst' -type f | grep -v debug | head -1)
-            
-            # If main package not found, try any calamares-git package
-            if [ -z \"\${PKGFILE}\" ]; then
-                PKGFILE=\$(find /tmp/calamares-git -maxdepth 1 -name 'calamares-git*.pkg.tar.zst' -type f | grep -v debug | head -1)
-            fi
-            
-            # If still not found, get the first one (but warn)
-            if [ -z \"\${PKGFILE}\" ]; then
-                PKGFILE=\$(find /tmp/calamares-git -maxdepth 1 -name 'calamares-git*.pkg.tar.zst' -type f | head -1)
-                if echo \"\${PKGFILE}\" | grep -q debug; then
-                    echo \"WARNING: Only debug package found, this won't work. Looking for main package...\"
-                    # List all packages to see what was built
-                    echo \"Built packages:\"
-                    ls -la /tmp/calamares-git/*.pkg.tar.zst 2>/dev/null || true
-                fi
-            fi
-            
             # List all built packages for debugging
             echo 'All built packages:'
             ls -1 /tmp/calamares-git/*.pkg.tar.zst 2>/dev/null || true
             
-            # Find the main package (NOT debug) - try multiple patterns
-            MAIN_PKG=\$(find /tmp/calamares-git -maxdepth 1 -name 'calamares-git-*.pkg.tar.zst' -type f ! -name '*debug*' ! -name '*-debug-*' | head -1)
+            # Find the main package using the function
+            MAIN_PKG=\$(find_calamares_package /tmp/calamares-git)
             
-            # If not found, try without the version number pattern
-            if [ -z \"\${MAIN_PKG}\" ]; then
-                MAIN_PKG=\$(ls -1 /tmp/calamares-git/calamares-git-*.pkg.tar.zst 2>/dev/null | grep -v debug | head -1)
-            fi
-            
-            # If still not found, check if maybe only one package was built
-            if [ -z \"\${MAIN_PKG}\" ]; then
-                ALL_PKGS=\$(ls -1 /tmp/calamares-git/*.pkg.tar.zst 2>/dev/null)
-                PKG_COUNT=\$(echo \"\${ALL_PKGS}\" | wc -l)
-                echo \"Found \${PKG_COUNT} package(s)\"
-                
-                if [ \"\${PKG_COUNT}\" -eq 1 ]; then
-                    # Only one package - use it (might be the main one with different naming)
-                    MAIN_PKG=\$(echo \"\${ALL_PKGS}\" | head -1)
-                    echo \"Only one package found, using: \${MAIN_PKG}\"
-                elif [ \"\${PKG_COUNT}\" -gt 1 ]; then
-                    # Multiple packages - find the one that's NOT debug
-                    MAIN_PKG=\$(echo \"\${ALL_PKGS}\" | grep -v debug | head -1)
-                    if [ -z \"\${MAIN_PKG}\" ]; then
-                        echo 'ERROR: Only debug packages found!'
-                        echo 'Available packages:'
-                        echo \"\${ALL_PKGS}\"
-                        exit 1
-                    fi
-                else
-                    echo 'ERROR: No packages found!'
-                    exit 1
-                fi
+            if [ -z \"\${MAIN_PKG}\" ] || [ ! -f \"\${MAIN_PKG}\" ]; then
+                echo 'ERROR: Failed to find Calamares package!' >&2
+                echo 'Built packages:' >&2
+                ls -la /tmp/calamares-git/*.pkg.tar.zst 2>/dev/null || true
+                exit 1
             fi
             
             echo \"Installing main package: \${MAIN_PKG}\"

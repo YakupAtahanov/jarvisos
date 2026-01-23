@@ -120,6 +120,137 @@ EFI_IMG_PATH="${EFI_ARCHISO_DIR}/efiboot.img"
 LOADER_DIR="loader"
 LOADER_ENTRIES_DIR="${LOADER_DIR}/entries"
 
+# Function to mount EFI boot image
+mount_efi_image() {
+    local efi_img_path="$1"
+    local efi_mount=$(mktemp -d)
+    
+    if sudo mount -o loop "${efi_img_path}" "${efi_mount}" 2>/dev/null; then
+        echo "${efi_mount}"
+        return 0
+    else
+        rmdir "${efi_mount}" 2>/dev/null || true
+        return 1
+    fi
+}
+
+# Function to unmount EFI boot image
+unmount_efi_image() {
+    local efi_mount="$1"
+    
+    if [ -z "${efi_mount}" ] || [ ! -d "${efi_mount}" ]; then
+        return 1
+    fi
+    
+    sudo umount "${efi_mount}" 2>/dev/null || sudo umount -l "${efi_mount}" 2>/dev/null || true
+    rmdir "${efi_mount}" 2>/dev/null || true
+}
+
+# Function to verify EFI boot image contents
+verify_efi_image() {
+    local efi_img_path="$1"
+    local efi_mount="$2"
+    local has_loader=false
+    local has_kernel=false
+    
+    if [ -z "${efi_mount}" ] || [ ! -d "${efi_mount}" ]; then
+        echo "false false"
+        return 1
+    fi
+    
+    # Check for loader entries
+    if [ -d "${efi_mount}/EFI/archiso/loader/entries" ] && [ -n "$(ls -A "${efi_mount}/EFI/archiso/loader/entries" 2>/dev/null)" ]; then
+        has_loader=true
+    fi
+    
+    # Check for kernel/initramfs files
+    if [ -f "${efi_mount}/EFI/archiso/boot/x86_64/vmlinuz-linux" ] && [ -f "${efi_mount}/EFI/archiso/boot/x86_64/initramfs-linux.img" ]; then
+        has_kernel=true
+    fi
+    
+    echo "${has_loader} ${has_kernel}"
+}
+
+# Function to copy loader configuration to EFI image
+copy_loader_config() {
+    local efi_mount="$1"
+    local loader_dir="$2"
+    local loader_entries_dir="$3"
+    
+    if [ -z "${efi_mount}" ] || [ ! -d "${efi_mount}" ]; then
+        return 1
+    fi
+    
+    if [ ! -d "${loader_entries_dir}" ] || [ ! -f "${loader_dir}/loader.conf" ]; then
+        return 1
+    fi
+    
+    echo -e "${BLUE}Copying boot menu configuration into EFI boot image...${NC}"
+    sudo mkdir -p "${efi_mount}/loader/entries"
+    
+    # Copy loader.conf
+    if [ -f "${loader_dir}/loader.conf" ]; then
+        sudo cp "${loader_dir}/loader.conf" "${efi_mount}/loader/" || true
+        echo -e "${GREEN}✓ Copied loader.conf${NC}"
+    fi
+    
+    # Copy all boot menu entries
+    if [ -d "${loader_entries_dir}" ]; then
+        sudo cp -r "${loader_entries_dir}"/* "${efi_mount}/loader/entries/" 2>/dev/null || true
+        local entry_count=$(ls -1 "${loader_entries_dir}"/*.conf 2>/dev/null | wc -l)
+        if [ "${entry_count}" -gt 0 ]; then
+            echo -e "${GREEN}✓ Copied ${entry_count} boot menu entries${NC}"
+        fi
+    fi
+}
+
+# Function to copy kernel files to EFI image
+copy_kernel_files() {
+    local efi_mount="$1"
+    local kernel_src="$2"
+    
+    if [ -z "${efi_mount}" ] || [ ! -d "${efi_mount}" ]; then
+        return 1
+    fi
+    
+    if [ ! -d "${kernel_src}" ]; then
+        echo -e "${YELLOW}⚠ Kernel source directory not found: ${kernel_src}${NC}"
+        return 1
+    fi
+    
+    local kernel_dst="${efi_mount}/EFI/archiso/boot/x86_64"
+    echo -e "${BLUE}Copying kernel/initramfs files into EFI boot image...${NC}"
+    sudo mkdir -p "${kernel_dst}"
+    
+    # Copy kernel
+    if [ -f "${kernel_src}/vmlinuz-linux" ]; then
+        sudo cp "${kernel_src}/vmlinuz-linux" "${kernel_dst}/" || true
+        echo -e "${GREEN}✓ Copied vmlinuz-linux${NC}"
+    fi
+    
+    # Copy initramfs
+    if [ -f "${kernel_src}/initramfs-linux.img" ]; then
+        sudo cp "${kernel_src}/initramfs-linux.img" "${kernel_dst}/" || true
+        echo -e "${GREEN}✓ Copied initramfs-linux.img${NC}"
+    fi
+    
+    # Copy fallback initramfs if it exists
+    if [ -f "${kernel_src}/initramfs-linux-fallback.img" ]; then
+        sudo cp "${kernel_src}/initramfs-linux-fallback.img" "${kernel_dst}/" || true
+        echo -e "${GREEN}✓ Copied initramfs-linux-fallback.img${NC}"
+    fi
+    
+    # Copy microcode updates if they exist
+    if [ -f "${kernel_src}/amd-ucode.img" ]; then
+        sudo cp "${kernel_src}/amd-ucode.img" "${kernel_dst}/" || true
+        echo -e "${GREEN}✓ Copied amd-ucode.img${NC}"
+    fi
+    if [ -f "${kernel_src}/intel-ucode.img" ]; then
+        sudo cp "${kernel_src}/intel-ucode.img" "${kernel_dst}/" || true
+        echo -e "${GREEN}✓ Copied intel-ucode.img${NC}"
+    fi
+}
+
 # Function to fix EFI boot structure for systemd-boot
 # systemd-boot expects loader configuration at /loader/ (root of EFI partition), not /EFI/archiso/loader/
 fix_efi_boot_structure() {
@@ -228,116 +359,14 @@ fix_efi_boot_structure() {
     echo -e "${GREEN}✓ EFI boot structure fixed${NC}"
 }
 
-# First, check if original efiboot.img exists from extracted ISO
-if [ -f "${EFI_IMG_PATH}" ]; then
-    echo -e "${GREEN}✓ Found existing EFI boot image: ${EFI_IMG_PATH}${NC}"
+# Function to create new EFI boot image from EFI/BOOT directory
+create_efi_image() {
+    local efi_img_path="$1"
+    local efi_boot_dir="$2"
+    local loader_dir="$3"
+    local loader_entries_dir="$4"
+    local efi_archiso_dir="$5"
     
-    # Verify efiboot.img contains boot menu configuration and kernel/initramfs
-    EFI_MOUNT=$(mktemp -d)
-    EFI_HAS_LOADER=false
-    EFI_HAS_KERNEL=false
-    
-    if sudo mount -o loop "${EFI_IMG_PATH}" "${EFI_MOUNT}" 2>/dev/null; then
-        # Check for loader entries
-        if [ -d "${EFI_MOUNT}/EFI/archiso/loader/entries" ] && [ -n "$(ls -A "${EFI_MOUNT}/EFI/archiso/loader/entries" 2>/dev/null)" ]; then
-            EFI_HAS_LOADER=true
-            echo -e "${GREEN}✓ EFI boot image contains boot menu configuration${NC}"
-        else
-            echo -e "${YELLOW}⚠ EFI boot image missing boot menu configuration, will add it...${NC}"
-        fi
-        
-        # Check for kernel/initramfs files
-        if [ -f "${EFI_MOUNT}/EFI/archiso/boot/x86_64/vmlinuz-linux" ] && [ -f "${EFI_MOUNT}/EFI/archiso/boot/x86_64/initramfs-linux.img" ]; then
-            EFI_HAS_KERNEL=true
-            echo -e "${GREEN}✓ EFI boot image contains kernel/initramfs files${NC}"
-        else
-            echo -e "${YELLOW}⚠ EFI boot image missing kernel/initramfs files, will add them...${NC}"
-        fi
-        
-        sudo umount "${EFI_MOUNT}" 2>/dev/null || sudo umount -l "${EFI_MOUNT}" 2>/dev/null || true
-    else
-        echo -e "${YELLOW}⚠ Could not mount efiboot.img for verification, will ensure all files are added...${NC}"
-    fi
-    rmdir "${EFI_MOUNT}" 2>/dev/null || true
-    
-    # If loader files or kernel/initramfs are missing, copy them into efiboot.img
-    if [ "${EFI_HAS_LOADER}" = false ] || [ "${EFI_HAS_KERNEL}" = false ]; then
-        EFI_MOUNT=$(mktemp -d)
-        
-        if sudo mount -o loop "${EFI_IMG_PATH}" "${EFI_MOUNT}" 2>/dev/null; then
-            # Copy loader configuration if missing
-            if [ "${EFI_HAS_LOADER}" = false ] && [ -d "${LOADER_ENTRIES_DIR}" ] && [ -f "${LOADER_DIR}/loader.conf" ]; then
-                echo -e "${BLUE}Copying boot menu configuration into EFI boot image...${NC}"
-                # Create loader directory structure at root level (systemd-boot requirement)
-                sudo mkdir -p "${EFI_MOUNT}/loader/entries"
-                
-                # Copy loader.conf
-                if [ -f "${LOADER_DIR}/loader.conf" ]; then
-                    sudo cp "${LOADER_DIR}/loader.conf" "${EFI_MOUNT}/loader/" || true
-                    echo -e "${GREEN}✓ Copied loader.conf${NC}"
-                fi
-                
-                # Copy all boot menu entries
-                if [ -d "${LOADER_ENTRIES_DIR}" ]; then
-                    sudo cp -r "${LOADER_ENTRIES_DIR}"/* "${EFI_MOUNT}/loader/entries/" 2>/dev/null || true
-                    ENTRY_COUNT=$(ls -1 "${LOADER_ENTRIES_DIR}"/*.conf 2>/dev/null | wc -l)
-                    echo -e "${GREEN}✓ Copied ${ENTRY_COUNT} boot menu entries${NC}"
-                fi
-            fi
-            
-            # Copy kernel/initramfs files if missing
-            if [ "${EFI_HAS_KERNEL}" = false ]; then
-                KERNEL_SRC="arch/boot/x86_64"
-                KERNEL_DST="${EFI_MOUNT}/EFI/archiso/boot/x86_64"
-                
-                if [ -d "${KERNEL_SRC}" ]; then
-                    echo -e "${BLUE}Copying kernel/initramfs files into EFI boot image...${NC}"
-                    sudo mkdir -p "${KERNEL_DST}"
-                    
-                    # Copy kernel
-                    if [ -f "${KERNEL_SRC}/vmlinuz-linux" ]; then
-                        sudo cp "${KERNEL_SRC}/vmlinuz-linux" "${KERNEL_DST}/" || true
-                        echo -e "${GREEN}✓ Copied vmlinuz-linux${NC}"
-                    fi
-                    
-                    # Copy initramfs
-                    if [ -f "${KERNEL_SRC}/initramfs-linux.img" ]; then
-                        sudo cp "${KERNEL_SRC}/initramfs-linux.img" "${KERNEL_DST}/" || true
-                        echo -e "${GREEN}✓ Copied initramfs-linux.img${NC}"
-                    fi
-                    
-                    # Copy fallback initramfs if it exists
-                    if [ -f "${KERNEL_SRC}/initramfs-linux-fallback.img" ]; then
-                        sudo cp "${KERNEL_SRC}/initramfs-linux-fallback.img" "${KERNEL_DST}/" || true
-                        echo -e "${GREEN}✓ Copied initramfs-linux-fallback.img${NC}"
-                    fi
-                    
-                    # Copy microcode updates if they exist
-                    if [ -f "${KERNEL_SRC}/amd-ucode.img" ]; then
-                        sudo cp "${KERNEL_SRC}/amd-ucode.img" "${KERNEL_DST}/" || true
-                        echo -e "${GREEN}✓ Copied amd-ucode.img${NC}"
-                    fi
-                    if [ -f "${KERNEL_SRC}/intel-ucode.img" ]; then
-                        sudo cp "${KERNEL_SRC}/intel-ucode.img" "${KERNEL_DST}/" || true
-                        echo -e "${GREEN}✓ Copied intel-ucode.img${NC}"
-                    fi
-                else
-                    echo -e "${YELLOW}⚠ Kernel source directory not found: ${KERNEL_SRC}${NC}"
-                fi
-            fi
-            
-            # Fix EFI boot structure for systemd-boot (copy loader files to root level and update paths)
-            fix_efi_boot_structure "${EFI_MOUNT}"
-            
-            sudo umount "${EFI_MOUNT}" 2>/dev/null || sudo umount -l "${EFI_MOUNT}" 2>/dev/null || true
-            echo -e "${GREEN}✓ Updated EFI boot image${NC}"
-        else
-            echo -e "${YELLOW}Warning: Could not mount efiboot.img to add files${NC}"
-        fi
-        rmdir "${EFI_MOUNT}" 2>/dev/null || true
-    fi
-# If not found, create new one from EFI/BOOT/ directory (fallback scenario)
-elif [ ! -f "${EFI_IMG_PATH}" ] && [ -d "${EFI_BOOT_DIR}" ]; then
     echo -e "${BLUE}Creating EFI boot image from EFI/BOOT directory...${NC}"
     
     # Check if required tools are available
@@ -351,137 +380,141 @@ elif [ ! -f "${EFI_IMG_PATH}" ] && [ -d "${EFI_BOOT_DIR}" ]; then
     fi
     
     # Determine mkfs command
-    MKFS_CMD=""
+    local mkfs_cmd=""
     if command -v mkfs.fat &> /dev/null; then
-        MKFS_CMD="mkfs.fat"
+        mkfs_cmd="mkfs.fat"
     elif command -v mkfs.vfat &> /dev/null; then
-        MKFS_CMD="mkfs.vfat"
+        mkfs_cmd="mkfs.vfat"
     else
         echo -e "${RED}Error: mkfs.fat or mkfs.vfat not found. Please install dosfstools${NC}" >&2
         echo -e "${YELLOW}Install with: sudo dnf install dosfstools${NC}"
-        exit 1
+        return 1
     fi
     
     # Create archiso directory if it doesn't exist
-    mkdir -p "${EFI_ARCHISO_DIR}"
+    mkdir -p "${efi_archiso_dir}"
     
     # Create a temporary mount point
-    EFI_MOUNT=$(mktemp -d)
+    local efi_mount=$(mktemp -d)
     
     # Create FAT32 filesystem image (400MB to fit 224M initramfs + kernel + boot files)
     echo -e "${BLUE}Creating FAT32 filesystem image (400MB)...${NC}"
-    dd if=/dev/zero of="${EFI_IMG_PATH}" bs=1M count=400 status=progress
+    dd if=/dev/zero of="${efi_img_path}" bs=1M count=400 status=progress
     
     # Format as FAT32 with label
-    ${MKFS_CMD} -F 32 -n "ARCHISO_EFI" "${EFI_IMG_PATH}" >/dev/null 2>&1 || {
+    ${mkfs_cmd} -F 32 -n "ARCHISO_EFI" "${efi_img_path}" >/dev/null 2>&1 || {
         echo -e "${RED}Error: Failed to format EFI boot image${NC}" >&2
-        rm -f "${EFI_IMG_PATH}"
-        rmdir "${EFI_MOUNT}" 2>/dev/null || true
-        exit 1
+        rm -f "${efi_img_path}"
+        rmdir "${efi_mount}" 2>/dev/null || true
+        return 1
     }
     
     # Mount the image
-    sudo mount -o loop "${EFI_IMG_PATH}" "${EFI_MOUNT}" || {
+    if ! sudo mount -o loop "${efi_img_path}" "${efi_mount}" 2>/dev/null; then
         echo -e "${RED}Error: Failed to mount EFI boot image${NC}" >&2
-        rm -f "${EFI_IMG_PATH}"
-        rmdir "${EFI_MOUNT}" 2>/dev/null || true
-        exit 1
-    }
+        rm -f "${efi_img_path}"
+        rmdir "${efi_mount}" 2>/dev/null || true
+        return 1
+    fi
     
     # Create EFI/BOOT directory structure in the image
-    sudo mkdir -p "${EFI_MOUNT}/EFI/BOOT"
+    sudo mkdir -p "${efi_mount}/EFI/BOOT"
     
     # Copy EFI boot files
     echo -e "${BLUE}Copying EFI boot files...${NC}"
-    if [ -f "${EFI_BOOT_DIR}/BOOTx64.EFI" ]; then
-        sudo cp "${EFI_BOOT_DIR}/BOOTx64.EFI" "${EFI_MOUNT}/EFI/BOOT/" || true
+    if [ -f "${efi_boot_dir}/BOOTx64.EFI" ]; then
+        sudo cp "${efi_boot_dir}/BOOTx64.EFI" "${efi_mount}/EFI/BOOT/" || true
         echo -e "${GREEN}✓ Copied BOOTx64.EFI${NC}"
     fi
-    if [ -f "${EFI_BOOT_DIR}/BOOTIA32.EFI" ]; then
-        sudo cp "${EFI_BOOT_DIR}/BOOTIA32.EFI" "${EFI_MOUNT}/EFI/BOOT/" || true
+    if [ -f "${efi_boot_dir}/BOOTIA32.EFI" ]; then
+        sudo cp "${efi_boot_dir}/BOOTIA32.EFI" "${efi_mount}/EFI/BOOT/" || true
         echo -e "${GREEN}✓ Copied BOOTIA32.EFI${NC}"
     fi
     
-    # Copy boot menu configuration (loader directory structure)
-    echo -e "${BLUE}Copying boot menu configuration...${NC}"
-    if [ -d "${LOADER_ENTRIES_DIR}" ] && [ -f "${LOADER_DIR}/loader.conf" ]; then
-        # Create loader directory structure at root level (systemd-boot requirement)
-        sudo mkdir -p "${EFI_MOUNT}/loader/entries"
-        
-        # Copy loader.conf
-        sudo cp "${LOADER_DIR}/loader.conf" "${EFI_MOUNT}/loader/" || true
-        echo -e "${GREEN}✓ Copied loader.conf${NC}"
-        
-        # Copy all boot menu entries
-        if [ -d "${LOADER_ENTRIES_DIR}" ]; then
-            sudo cp -r "${LOADER_ENTRIES_DIR}"/* "${EFI_MOUNT}/loader/entries/" 2>/dev/null || true
-            ENTRY_COUNT=$(ls -1 "${LOADER_ENTRIES_DIR}"/*.conf 2>/dev/null | wc -l)
-            if [ "${ENTRY_COUNT}" -gt 0 ]; then
-                echo -e "${GREEN}✓ Copied ${ENTRY_COUNT} boot menu entries${NC}"
-            fi
-        fi
-    else
-        echo -e "${YELLOW}⚠ Boot menu configuration not found in loader/ directory${NC}"
-    fi
+    # Copy loader configuration
+    copy_loader_config "${efi_mount}" "${loader_dir}" "${loader_entries_dir}"
     
-    # Copy kernel/initramfs files into efiboot.img
-    KERNEL_SRC="arch/boot/x86_64"
-    KERNEL_DST="${EFI_MOUNT}/EFI/archiso/boot/x86_64"
+    # Copy kernel/initramfs files
+    copy_kernel_files "${efi_mount}" "arch/boot/x86_64"
     
-    if [ -d "${KERNEL_SRC}" ]; then
-        echo -e "${BLUE}Copying kernel/initramfs files into EFI boot image...${NC}"
-        sudo mkdir -p "${KERNEL_DST}"
-        
-        # Copy kernel
-        if [ -f "${KERNEL_SRC}/vmlinuz-linux" ]; then
-            sudo cp "${KERNEL_SRC}/vmlinuz-linux" "${KERNEL_DST}/" || true
-            echo -e "${GREEN}✓ Copied vmlinuz-linux${NC}"
-        fi
-        
-        # Copy initramfs
-        if [ -f "${KERNEL_SRC}/initramfs-linux.img" ]; then
-            sudo cp "${KERNEL_SRC}/initramfs-linux.img" "${KERNEL_DST}/" || true
-            echo -e "${GREEN}✓ Copied initramfs-linux.img${NC}"
-        fi
-        
-        # Copy fallback initramfs if it exists
-        if [ -f "${KERNEL_SRC}/initramfs-linux-fallback.img" ]; then
-            sudo cp "${KERNEL_SRC}/initramfs-linux-fallback.img" "${KERNEL_DST}/" || true
-            echo -e "${GREEN}✓ Copied initramfs-linux-fallback.img${NC}"
-        fi
-        
-        # Copy microcode updates if they exist
-        if [ -f "${KERNEL_SRC}/amd-ucode.img" ]; then
-            sudo cp "${KERNEL_SRC}/amd-ucode.img" "${KERNEL_DST}/" || true
-            echo -e "${GREEN}✓ Copied amd-ucode.img${NC}"
-        fi
-        if [ -f "${KERNEL_SRC}/intel-ucode.img" ]; then
-            sudo cp "${KERNEL_SRC}/intel-ucode.img" "${KERNEL_DST}/" || true
-            echo -e "${GREEN}✓ Copied intel-ucode.img${NC}"
-        fi
-    else
-        echo -e "${YELLOW}⚠ Kernel source directory not found: ${KERNEL_SRC}${NC}"
-    fi
-    
-    # Fix EFI boot structure for systemd-boot (copy loader files to root level and update paths)
-    fix_efi_boot_structure "${EFI_MOUNT}"
+    # Fix EFI boot structure for systemd-boot
+    fix_efi_boot_structure "${efi_mount}"
     
     # Unmount the image
-    sudo umount "${EFI_MOUNT}" || {
-        echo -e "${YELLOW}Warning: Failed to unmount EFI boot image, attempting force unmount...${NC}"
-        sudo umount -l "${EFI_MOUNT}" 2>/dev/null || true
-    }
-    rmdir "${EFI_MOUNT}" 2>/dev/null || true
+    unmount_efi_image "${efi_mount}"
     
-    if [ -f "${EFI_IMG_PATH}" ]; then
-        echo -e "${GREEN}✓ Created EFI boot image: ${EFI_IMG_PATH}${NC}"
-        if [ -d "${LOADER_ENTRIES_DIR}" ] && [ -f "${LOADER_DIR}/loader.conf" ]; then
+    if [ -f "${efi_img_path}" ]; then
+        echo -e "${GREEN}✓ Created EFI boot image: ${efi_img_path}${NC}"
+        if [ -d "${loader_entries_dir}" ] && [ -f "${loader_dir}/loader.conf" ]; then
             echo -e "${GREEN}  (Contains full boot menu configuration with all options)${NC}"
         else
             echo -e "${YELLOW}  Note: Created EFI image, but boot menu configuration was not found.${NC}"
         fi
+        return 0
     else
         echo -e "${RED}Error: Failed to create EFI boot image${NC}" >&2
+        return 1
+    fi
+}
+
+# First, check if original efiboot.img exists from extracted ISO
+if [ -f "${EFI_IMG_PATH}" ]; then
+    echo -e "${GREEN}✓ Found existing EFI boot image: ${EFI_IMG_PATH}${NC}"
+    
+    # Verify efiboot.img contains boot menu configuration and kernel/initramfs
+    EFI_MOUNT=$(mount_efi_image "${EFI_IMG_PATH}")
+    EFI_HAS_LOADER=false
+    EFI_HAS_KERNEL=false
+    
+    if [ -n "${EFI_MOUNT}" ] && [ -d "${EFI_MOUNT}" ]; then
+        VERIFY_RESULT=$(verify_efi_image "${EFI_IMG_PATH}" "${EFI_MOUNT}")
+        EFI_HAS_LOADER=$(echo "${VERIFY_RESULT}" | cut -d' ' -f1)
+        EFI_HAS_KERNEL=$(echo "${VERIFY_RESULT}" | cut -d' ' -f2)
+        
+        if [ "${EFI_HAS_LOADER}" = "true" ]; then
+            echo -e "${GREEN}✓ EFI boot image contains boot menu configuration${NC}"
+        else
+            echo -e "${YELLOW}⚠ EFI boot image missing boot menu configuration, will add it...${NC}"
+        fi
+        
+        if [ "${EFI_HAS_KERNEL}" = "true" ]; then
+            echo -e "${GREEN}✓ EFI boot image contains kernel/initramfs files${NC}"
+        else
+            echo -e "${YELLOW}⚠ EFI boot image missing kernel/initramfs files, will add them...${NC}"
+        fi
+        
+        unmount_efi_image "${EFI_MOUNT}"
+    else
+        echo -e "${YELLOW}⚠ Could not mount efiboot.img for verification, will ensure all files are added...${NC}"
+    fi
+    
+    # If loader files or kernel/initramfs are missing, copy them into efiboot.img
+    if [ "${EFI_HAS_LOADER}" = "false" ] || [ "${EFI_HAS_KERNEL}" = "false" ]; then
+        EFI_MOUNT=$(mount_efi_image "${EFI_IMG_PATH}")
+        
+        if [ -n "${EFI_MOUNT}" ] && [ -d "${EFI_MOUNT}" ]; then
+            # Copy loader configuration if missing
+            if [ "${EFI_HAS_LOADER}" = "false" ]; then
+                copy_loader_config "${EFI_MOUNT}" "${LOADER_DIR}" "${LOADER_ENTRIES_DIR}"
+            fi
+            
+            # Copy kernel/initramfs files if missing
+            if [ "${EFI_HAS_KERNEL}" = "false" ]; then
+                copy_kernel_files "${EFI_MOUNT}" "arch/boot/x86_64"
+            fi
+            
+            # Fix EFI boot structure for systemd-boot (copy loader files to root level and update paths)
+            fix_efi_boot_structure "${EFI_MOUNT}"
+            
+            unmount_efi_image "${EFI_MOUNT}"
+            echo -e "${GREEN}✓ Updated EFI boot image${NC}"
+        else
+            echo -e "${YELLOW}Warning: Could not mount efiboot.img to add files${NC}"
+        fi
+    fi
+# If not found, create new one from EFI/BOOT/ directory (fallback scenario)
+elif [ ! -f "${EFI_IMG_PATH}" ] && [ -d "${EFI_BOOT_DIR}" ]; then
+    if ! create_efi_image "${EFI_IMG_PATH}" "${EFI_BOOT_DIR}" "${LOADER_DIR}" "${LOADER_ENTRIES_DIR}" "${EFI_ARCHISO_DIR}"; then
         exit 1
     fi
 fi

@@ -63,6 +63,23 @@ ISO_FILE="archlinux-2025.11.01-x86_64.iso"
 JARVIS_ISO_FILE="jarvisos-*-x86_64.iso"
 
 # ============================================================================
+# OPTIONAL BUILD LOGGING
+# ============================================================================
+
+# ENABLE_BUILD_LOG: Enable build logging to file
+# Set to "true" to enable logging, "false" to disable
+# Default: false (disabled)
+# When enabled, build operations and errors will be logged to BUILD_LOG_FILE
+ENABLE_BUILD_LOG="false"
+
+# BUILD_LOG_FILE: Path to build log file (relative to PROJECT_ROOT)
+# This file will contain detailed logs of build operations
+# Default: ${BUILD_DIR}/build.log
+# Example: /build/build.log (relative to PROJECT_ROOT)
+# Only used if ENABLE_BUILD_LOG is set to "true"
+BUILD_LOG_FILE="/build/build.log"
+
+# ============================================================================
 # USAGE NOTES
 # ============================================================================
 #
