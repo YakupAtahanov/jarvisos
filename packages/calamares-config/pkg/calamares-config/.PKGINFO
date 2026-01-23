@@ -6,7 +6,7 @@ xdata = pkgtype=pkg
 pkgver = 1.0.0-1
 pkgdesc = Calamares installer configuration for JARVIS OS
 url = 
-builddate = 1769043447
+builddate = 1769193875
 packager = Unknown Packager
 size = 14024
 arch = any

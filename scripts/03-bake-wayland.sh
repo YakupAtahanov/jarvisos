@@ -161,13 +161,21 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     }
 "
 
+# KDE Audio Applet
+echo -e "${BLUE}Installing KDE audio applet...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-pa
+
 # Cursor themes
 echo -e "${BLUE}Installing cursor themes...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm xcursor-themes breeze breeze-icons adwaita-cursors
 
 # Networking
 echo -e "${BLUE}Installing networking...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm networkmanager network-manager-applet
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm networkmanager plasma-nm
+
+# Bluetooth
+echo -e "${BLUE}Installing Bluetooth...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm bluez bluez-utils bluedevil
 
 # Fonts
 echo -e "${BLUE}Installing fonts...${NC}"
@@ -216,6 +224,7 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
 echo -e "${BLUE}Enabling services...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable sddm
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable bluetooth
 
 # Step 8.5: Enable PipeWire audio services for root user (autologin)
 echo -e "${BLUE}Enabling PipeWire audio services for root user...${NC}"
