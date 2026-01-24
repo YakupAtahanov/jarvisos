@@ -181,6 +181,10 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-meta kde-appl
 echo -e "${BLUE}Installing graphics drivers...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm mesa vulkan-intel vulkan-radeon libva-mesa-driver
 
+# Linux firmware (critical for hardware support - audio, network, touchpad, touchscreen)
+echo -e "${BLUE}Installing Linux firmware...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm linux-firmware
+
 # Audio stack (PipeWire)
 echo -e "${BLUE}Installing audio stack...${NC}"
 echo -e "${BLUE}Installing audio stack (PipeWire)...${NC}"
@@ -197,6 +201,10 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
 # KDE Audio Applet
 echo -e "${BLUE}Installing KDE audio applet...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-pa
+
+# ALSA utilities and firmware (required for audio hardware detection)
+echo -e "${BLUE}Installing ALSA utilities and firmware...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm alsa-utils alsa-firmware alsa-plugins
 
 # Cursor themes
 echo -e "${BLUE}Installing cursor themes...${NC}"
@@ -230,6 +238,17 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm firefox konsole dolp
 echo -e "${BLUE}Installing input drivers...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm libinput xf86-input-libinput
 
+# Ensure kernel modules for touchpad/touchscreen are available
+# linux-firmware (installed above) provides firmware for these modules
+# Modules (psmouse, i2c_hid, hid_multitouch) will load automatically via udev
+echo -e "${BLUE}Configuring input device kernel modules...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    # Create modprobe configuration to ensure modules are available
+    # Modules will load automatically when hardware is detected
+    echo 'options psmouse proto=auto' > /etc/modprobe.d/psmouse.conf 2>/dev/null || true
+    echo 'options i2c_hid delay_override=1' > /etc/modprobe.d/i2c_hid.conf 2>/dev/null || true
+" || true
+
 # Step 7: Ensure root user setup for autologin
 echo -e "${BLUE}Setting up root user for autologin...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
@@ -255,6 +274,21 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
 
 # Step 8: Enable services
 echo -e "${BLUE}Enabling services...${NC}"
+
+# Disable conflicting network services (may conflict with NetworkManager)
+echo -e "${BLUE}Disabling conflicting network services...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable systemd-networkd.service 2>/dev/null || true
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable dhcpcd.service 2>/dev/null || true
+# Disable iwd.service - conflicts with NetworkManager (both try to manage wireless)
+# NetworkManager can use IWD as backend, but standalone iwd.service must be disabled
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable iwd.service 2>/dev/null || true
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl mask iwd.service 2>/dev/null || true
+
+# Enable systemd-resolved (required for NetworkManager DNS resolution)
+echo -e "${BLUE}Enabling systemd-resolved...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable systemd-resolved.service
+
+# Enable NetworkManager and other services
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable sddm
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable bluetooth
@@ -277,6 +311,47 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
 "
 
 echo -e "${GREEN}✓ PipeWire audio services enabled${NC}"
+
+# Step 8.6: Create PipeWire autostart script for live ISO
+echo -e "${BLUE}Creating PipeWire autostart script...${NC}"
+sudo tee "${SQUASHFS_ROOTFS}/etc/profile.d/pipewire-start.sh" > /dev/null << 'EOF'
+#!/bin/bash
+# PipeWire autostart script for live ISO
+# Starts PipeWire services when user session begins
+
+# Only run if PipeWire is not already running
+if ! systemctl --user is-active --quiet pipewire.service 2>/dev/null; then
+    # Ensure systemd user instance is running
+    if ! systemctl --user is-system-running >/dev/null 2>&1; then
+        # Start systemd user instance
+        systemctl --user start default.target 2>/dev/null || true
+    fi
+    
+    # Start PipeWire services
+    systemctl --user start pipewire.service 2>/dev/null || true
+    systemctl --user start wireplumber.service 2>/dev/null || true
+    systemctl --user start pipewire-pulse.service 2>/dev/null || true
+fi
+EOF
+
+sudo chmod +x "${SQUASHFS_ROOTFS}/etc/profile.d/pipewire-start.sh"
+
+# Also create KDE Plasma environment script for Wayland session
+sudo mkdir -p "${SQUASHFS_ROOTFS}/root/.config/plasma-workspace/env"
+sudo tee "${SQUASHFS_ROOTFS}/root/.config/plasma-workspace/env/pipewire.sh" > /dev/null << 'EOF'
+#!/bin/bash
+# Start PipeWire services for KDE Plasma session
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user start pipewire.service 2>/dev/null || true
+    systemctl --user start wireplumber.service 2>/dev/null || true
+    systemctl --user start pipewire-pulse.service 2>/dev/null || true
+fi
+EOF
+
+sudo chmod +x "${SQUASHFS_ROOTFS}/root/.config/plasma-workspace/env/pipewire.sh"
+sudo chown -R root:root "${SQUASHFS_ROOTFS}/root/.config/plasma-workspace/env/pipewire.sh" 2>/dev/null || true
+
+echo -e "${GREEN}✓ PipeWire autostart scripts created${NC}"
 
 # Step 9: Configure SDDM autologin for live boot
 echo -e "${BLUE}Configuring SDDM autologin for live boot...${NC}"
