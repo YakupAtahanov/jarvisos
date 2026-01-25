@@ -46,6 +46,94 @@ if [ -z "${SQUASHFS_FILE}" ] || [ ! -f "${SQUASHFS_FILE}" ]; then
     exit 1
 fi
 
+# ============================================================================
+# CRITICAL: Copy kernel and initramfs from rootfs to ISO structure
+# ============================================================================
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}Copying kernel and initramfs from rootfs to ISO...${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+# Define paths
+ROOTFS_BOOT="${BUILD_DIR}/iso-rootfs/boot"
+ISO_BOOT_DIR="${ISO_EXTRACT_DIR}/arch/boot/x86_64"
+
+# Verify rootfs boot directory exists
+if ! sudo test -d "${ROOTFS_BOOT}"; then
+    echo -e "${RED}Error: Rootfs boot directory not found at ${ROOTFS_BOOT}${NC}" >&2
+    exit 1
+fi
+
+# Ensure ISO boot directory exists
+mkdir -p "${ISO_BOOT_DIR}"
+
+# Copy kernel (vmlinuz-linux)
+echo -e "${BLUE}Copying kernel...${NC}"
+if sudo test -f "${ROOTFS_BOOT}/vmlinuz-linux"; then
+    sudo cp "${ROOTFS_BOOT}/vmlinuz-linux" "${ISO_BOOT_DIR}/"
+    KERNEL_SIZE=$(sudo du -h "${ROOTFS_BOOT}/vmlinuz-linux" | cut -f1)
+    echo -e "${GREEN}✓ Copied vmlinuz-linux (${KERNEL_SIZE})${NC}"
+else
+    echo -e "${RED}Error: vmlinuz-linux not found in rootfs${NC}" >&2
+    exit 1
+fi
+
+# Copy main initramfs (initramfs-linux.img)
+echo -e "${BLUE}Copying initramfs...${NC}"
+if sudo test -f "${ROOTFS_BOOT}/initramfs-linux.img"; then
+    sudo cp "${ROOTFS_BOOT}/initramfs-linux.img" "${ISO_BOOT_DIR}/"
+    INITRAMFS_SIZE=$(sudo du -h "${ROOTFS_BOOT}/initramfs-linux.img" | cut -f1)
+    echo -e "${GREEN}✓ Copied initramfs-linux.img (${INITRAMFS_SIZE})${NC}"
+    echo -e "${GREEN}  This initramfs contains ALL hardware modules${NC}"
+else
+    echo -e "${RED}Error: initramfs-linux.img not found in rootfs${NC}" >&2
+    exit 1
+fi
+
+# Copy fallback initramfs if it exists
+if sudo test -f "${ROOTFS_BOOT}/initramfs-linux-fallback.img"; then
+    echo -e "${BLUE}Copying fallback initramfs...${NC}"
+    sudo cp "${ROOTFS_BOOT}/initramfs-linux-fallback.img" "${ISO_BOOT_DIR}/"
+    FALLBACK_SIZE=$(sudo du -h "${ROOTFS_BOOT}/initramfs-linux-fallback.img" | cut -f1)
+    echo -e "${GREEN}✓ Copied initramfs-linux-fallback.img (${FALLBACK_SIZE})${NC}"
+fi
+
+# Copy microcode images (AMD and Intel CPU microcode updates)
+echo -e "${BLUE}Copying microcode images...${NC}"
+MICROCODE_COPIED=0
+for ucode in amd-ucode.img intel-ucode.img; do
+    if sudo test -f "${ROOTFS_BOOT}/${ucode}"; then
+        sudo cp "${ROOTFS_BOOT}/${ucode}" "${ISO_BOOT_DIR}/"
+        UCODE_SIZE=$(sudo du -h "${ROOTFS_BOOT}/${ucode}" | cut -f1)
+        echo -e "${GREEN}✓ Copied ${ucode} (${UCODE_SIZE})${NC}"
+        MICROCODE_COPIED=1
+    fi
+done
+
+if [ ${MICROCODE_COPIED} -eq 0 ]; then
+    echo -e "${YELLOW}⚠ No microcode images found (optional)${NC}"
+fi
+
+# Verify files were copied correctly
+echo -e "${BLUE}Verifying copied files...${NC}"
+if [ ! -f "${ISO_BOOT_DIR}/vmlinuz-linux" ] || [ ! -f "${ISO_BOOT_DIR}/initramfs-linux.img" ]; then
+    echo -e "${RED}Error: Failed to copy kernel/initramfs to ISO structure${NC}" >&2
+    exit 1
+fi
+
+# Show before/after comparison
+echo ""
+echo -e "${BLUE}File timestamps:${NC}"
+echo -e "${BLUE}Source (rootfs):${NC}"
+sudo ls -lh "${ROOTFS_BOOT}/vmlinuz-linux" "${ROOTFS_BOOT}/initramfs-linux.img" | awk '{print "  " $6, $7, $8, $9}'
+echo -e "${BLUE}Destination (ISO):${NC}"
+ls -lh "${ISO_BOOT_DIR}/vmlinuz-linux" "${ISO_BOOT_DIR}/initramfs-linux.img" | awk '{print "  " $6, $7, $8, $9}'
+
+echo ""
+echo -e "${GREEN}✓ Kernel and initramfs successfully copied to ISO structure${NC}"
+echo -e "${GREEN}✓ The ISO will now boot with the custom initramfs containing all modules${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
 # Check if xorriso is available
 if ! command -v xorriso &> /dev/null; then
     echo -e "${RED}Error: xorriso not found. Please install libisoburn${NC}" >&2

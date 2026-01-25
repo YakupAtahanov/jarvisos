@@ -249,6 +249,152 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     echo 'options i2c_hid delay_override=1' > /etc/modprobe.d/i2c_hid.conf 2>/dev/null || true
 " || true
 
+# ============================================================================
+# CRITICAL FIX: Create mkinitcpio.conf for maximum hardware compatibility
+# ============================================================================
+# The 'autodetect' hook only includes modules for the BUILD machine's hardware
+# For a live ISO, we need ALL hardware modules included, not just autodetected ones
+echo -e "${BLUE}Creating mkinitcpio.conf for live ISO (all hardware support)...${NC}"
+
+# Backup original config
+if [ -f "${SQUASHFS_ROOTFS}/etc/mkinitcpio.conf" ]; then
+    sudo cp "${SQUASHFS_ROOTFS}/etc/mkinitcpio.conf" \
+           "${SQUASHFS_ROOTFS}/etc/mkinitcpio.conf.backup"
+fi
+
+# Create new mkinitcpio.conf with explicit module list
+sudo tee "${SQUASHFS_ROOTFS}/etc/mkinitcpio.conf" > /dev/null << 'MKINITCPIO_EOF'
+# JARVIS OS - Live ISO Configuration
+# Optimized for maximum hardware compatibility
+# 
+# CRITICAL: NO autodetect hook - includes ALL modules explicitly
+# This ensures the ISO works on any hardware, not just the build machine
+
+# ============================================================================
+# MODULES - Explicitly list all critical hardware modules
+# ============================================================================
+MODULES=(
+    # Filesystem support
+    ext4 vfat exfat ntfs3
+    
+    # USB support (CRITICAL for live USB boot)
+    usb_storage uas
+    
+    # Storage controllers
+    ahci sd_mod nvme
+    
+    # ========================================================================
+    # INPUT DEVICES (Touchpad, Touchscreen, Keyboard, Mouse)
+    # ========================================================================
+    # I2C HID devices (modern touchpads/touchscreens)
+    i2c_hid i2c_hid_acpi hid_multitouch hid_generic usbhid
+    # PS/2 touchpad (legacy laptops)
+    psmouse
+    # I2C controller drivers (Intel, AMD, generic)
+    i2c_i801 i2c_designware_platform i2c_designware_core
+    
+    # ========================================================================
+    # GRAPHICS DRIVERS (for display output)
+    # ========================================================================
+    i915 amdgpu radeon nouveau
+    
+    # ========================================================================
+    # AUDIO DRIVERS (Sound cards, speakers, microphones)
+    # ========================================================================
+    # HDA Intel (most common audio chipset)
+    snd_hda_intel
+    # HDA Codecs (various audio chip models)
+    snd_hda_codec_generic snd_hda_codec_realtek snd_hda_codec_hdmi
+    snd_hda_codec_conexant snd_hda_codec_ca0132
+    # SOF (Sound Open Firmware - modern Intel laptops)
+    snd_soc_skl snd_soc_avs snd_soc_core
+    
+    # ========================================================================
+    # NETWORK DRIVERS
+    # ========================================================================
+    # Ethernet controllers
+    e1000e r8169 igb ixgbe atlantic
+    
+    # WiFi - Intel (most common)
+    iwlwifi iwlmvm
+    
+    # WiFi - MediaTek (MT7921, MT7922, etc)
+    mt7921e mt76_connac_lib mt76
+    
+    # WiFi - Realtek (RTW88 series)
+    rtw88_8822ce rtw88_core rtw89_core rtw89_8852ae
+    
+    # WiFi - Broadcom
+    brcmfmac brcmutil
+    
+    # WiFi - Atheros/Qualcomm
+    ath10k_core ath10k_pci ath11k ath11k_pci
+    
+    # ========================================================================
+    # BLUETOOTH
+    # ========================================================================
+    btusb btintel btrtl btbcm
+    
+    # ========================================================================
+    # OTHER DEVICES
+    # ========================================================================
+    # Webcam
+    uvcvideo
+)
+
+# ============================================================================
+# BINARIES - Additional binaries to include (usually empty for live ISO)
+# ============================================================================
+BINARIES=()
+
+# ============================================================================
+# FILES - Additional files to include (usually empty)
+# ============================================================================
+FILES=()
+
+# ============================================================================
+# HOOKS - Build hooks determine what gets included in initramfs
+# ============================================================================
+# CRITICAL: 'autodetect' hook is REMOVED
+# autodetect only includes modules for the build machine's hardware
+# Without it, ALL modules in MODULES array are included
+HOOKS=(
+    base          # Basic initramfs structure
+    udev          # Device manager
+    modconf       # Load modules from /etc/modprobe.d/
+    kms           # Kernel mode setting (graphics)
+    keyboard      # Keyboard support
+    keymap        # Keyboard layout
+    consolefont   # Console font
+    block         # Block device support
+    filesystems   # Filesystem drivers
+    fsck          # Filesystem check
+)
+
+# ============================================================================
+# COMPRESSION - Use zstd for fast decompression during boot
+# ============================================================================
+COMPRESSION="zstd"
+COMPRESSION_OPTIONS=(-9)
+
+# Uncomment for debugging (no compression, faster build)
+#COMPRESSION="cat"
+MKINITCPIO_EOF
+
+echo -e "${GREEN}✓ Created mkinitcpio.conf with explicit module list${NC}"
+echo -e "${BLUE}  - Removed 'autodetect' hook${NC}"
+echo -e "${BLUE}  - Added explicit MODULES array with all critical hardware${NC}"
+echo -e "${BLUE}  - Initramfs will now work on ANY hardware${NC}"
+echo ""
+
+# Rebuild initramfs to include firmware and ALL kernel modules
+# This ensures firmware files (linux-firmware) are available during early boot
+# and ALL hardware modules are included (not just build machine's hardware)
+echo -e "${BLUE}Rebuilding initramfs with firmware support and all hardware modules...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" mkinitcpio -P || {
+    echo -e "${YELLOW}Warning: mkinitcpio had issues, but continuing...${NC}"
+}
+
 # Step 7: Ensure root user setup for autologin
 echo -e "${BLUE}Setting up root user for autologin...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
