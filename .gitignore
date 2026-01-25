@@ -209,3 +209,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Package build artifacts
+packages/**/*.pkg.tar.gz
+packages/**/*.pkg.tar.zst
+packages/**/pkg/
+packages/**/.BUILDINFO
+packages/**/.MTREE
+packages/**/.PKGINFO
