@@ -220,3 +220,4 @@ packages/**/.PKGINFO
 build-deps/archlinux*.iso
 .claude/
 CLAUDE.md
+FIRMWARE_FIXES.md

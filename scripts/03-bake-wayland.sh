@@ -183,7 +183,11 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm mesa vulkan-intel vu
 
 # Linux firmware (critical for hardware support - audio, network, touchpad, touchscreen)
 echo -e "${BLUE}Installing Linux firmware...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm linux-firmware
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm linux-firmware linux-firmware-marvell
+
+# CPU microcode (Intel and AMD)
+echo -e "${BLUE}Installing CPU microcode...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm intel-ucode amd-ucode
 
 # Audio stack (PipeWire)
 echo -e "${BLUE}Installing audio stack...${NC}"
@@ -206,6 +210,10 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-pa
 echo -e "${BLUE}Installing ALSA utilities and firmware...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm alsa-utils alsa-firmware alsa-plugins
 
+# RealtimeKit and Sound Open Firmware (CRITICAL for PipeWire audio)
+echo -e "${BLUE}Installing RealtimeKit and SOF firmware for real-time audio...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm rtkit sof-firmware
+
 # Cursor themes
 echo -e "${BLUE}Installing cursor themes...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm xcursor-themes breeze breeze-icons adwaita-cursors
@@ -213,6 +221,10 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm xcursor-themes breez
 # Networking
 echo -e "${BLUE}Installing networking...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm networkmanager plasma-nm
+
+# WiFi authentication and tools (CRITICAL for password-protected networks)
+echo -e "${BLUE}Installing WiFi authentication tools...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm wpa_supplicant iw wireless_tools wireless-regdb
 
 # Bluetooth
 echo -e "${BLUE}Installing Bluetooth...${NC}"
@@ -226,6 +238,21 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm ttf-dejavu ttf-liber
 echo -e "${BLUE}Installing development tools...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm base-devel git python python-pip nodejs npm wget curl vim
 
+# System utilities (standard in Arch ISO)
+echo -e "${BLUE}Installing system utilities...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    sudo \
+    less \
+    man-db \
+    man-pages \
+    dmidecode \
+    usbutils \
+    pciutils \
+    ethtool \
+    iproute2 \
+    bind-tools \
+    traceroute
+
 # Python packages
 echo -e "${BLUE}Installing Python packages...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm python-numpy python-scipy python-requests python-cryptography python-yaml python-toml
@@ -236,7 +263,11 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm firefox konsole dolp
 
 # Touchpad/Input drivers
 echo -e "${BLUE}Installing input drivers...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm libinput xf86-input-libinput
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm libinput xf86-input-libinput xorg-xinput
+
+# Input device debugging tools (for troubleshooting touchpad issues)
+echo -e "${BLUE}Installing input debugging tools...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm evtest
 
 # Ensure kernel modules for touchpad/touchscreen are available
 # linux-firmware (installed above) provides firmware for these modules
@@ -425,10 +456,8 @@ echo -e "${BLUE}Enabling services...${NC}"
 echo -e "${BLUE}Disabling conflicting network services...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable systemd-networkd.service 2>/dev/null || true
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable dhcpcd.service 2>/dev/null || true
-# Disable iwd.service - conflicts with NetworkManager (both try to manage wireless)
-# NetworkManager can use IWD as backend, but standalone iwd.service must be disabled
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable iwd.service 2>/dev/null || true
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl mask iwd.service 2>/dev/null || true
+# Note: iwd is not installed, so no need to disable it
+# NetworkManager will use wpa_supplicant as the WiFi backend
 
 # Enable systemd-resolved (required for NetworkManager DNS resolution)
 echo -e "${BLUE}Enabling systemd-resolved...${NC}"
