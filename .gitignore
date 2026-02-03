@@ -218,5 +218,5 @@ packages/**/.BUILDINFO
 packages/**/.MTREE
 packages/**/.PKGINFO
 build-deps/archlinux*.iso
-CLAUDE.md
 .claude/
+CLAUDE.md
