@@ -572,7 +572,9 @@ echo ""
 # Pre-check: Verify kernel modules directory exists
 # ============================================================================
 echo -e "${BLUE}Verifying kernel installation...${NC}"
-KERNEL_MODULES_DIR=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" find /usr/lib/modules -maxdepth 1 -type d -name "*-linux" 2>/dev/null | head -1)
+# Arch Linux kernel modules are in directories like "6.18.7-arch1-1" (not ending in "-linux")
+# Find any directory that looks like a kernel version (contains numbers and dashes)
+KERNEL_MODULES_DIR=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c 'ls -1 /usr/lib/modules/ 2>/dev/null | grep -E "^[0-9]+\." | head -1')
 if [ -z "${KERNEL_MODULES_DIR}" ]; then
     echo -e "${RED}FATAL: Kernel modules directory not found in /usr/lib/modules/${NC}" >&2
     echo -e "${YELLOW}Available directories:${NC}"
