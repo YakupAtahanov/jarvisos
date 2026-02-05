@@ -412,11 +412,27 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     fi
 "
 
-# Step 13: Enable jarvis service (but don't start - it's a live ISO)
-echo -e "${BLUE}Enabling jarvis service...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable jarvis.service || {
-    echo -e "${YELLOW}Warning: Could not enable jarvis service${NC}"
-}
+# Step 13: Skip enabling services in arch-chroot (systemd not running)
+# Services will be enabled by Calamares post-install scripts after actual OS installation
+echo -e "${BLUE}Systemd services installed - will be enabled after Calamares installation${NC}"
+
+# Create autostart script for Ollama in live environment
+echo -e "${BLUE}Creating Ollama autostart for live environment...${NC}"
+sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/xdg/autostart"
+sudo tee "${SQUASHFS_ROOTFS}/etc/xdg/autostart/ollama.desktop" > /dev/null << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Ollama Service
+Comment=Start Ollama server for JARVIS
+Exec=/usr/local/bin/ollama serve
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+Hidden=false
+NoDisplay=true
+EOF
+
+sudo chmod 644 "${SQUASHFS_ROOTFS}/etc/xdg/autostart/ollama.desktop"
 
 # Step 14: Cleanup package cache
 echo -e "${BLUE}Cleaning up package cache...${NC}"
