@@ -166,6 +166,14 @@ if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Syu --noconfirm 2>&1; then
     sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Syu --noconfirm 2>&1
 fi
 
+# ============================================================================
+# CRITICAL: Install Linux kernel package
+# ============================================================================
+echo -e "${BLUE}Installing Linux kernel...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm linux linux-headers
+
+echo -e "${GREEN}✓ Linux kernel installed${NC}"
+
 # Step 6: Install GUI packages in groups
 echo -e "${BLUE}Installing GUI packages...${NC}"
 
@@ -181,17 +189,31 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-meta kde-appl
 echo -e "${BLUE}Installing graphics drivers...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm mesa vulkan-intel vulkan-radeon libva-mesa-driver
 
-# Linux firmware (critical for hardware support - audio, network, touchpad, touchscreen)
-echo -e "${BLUE}Installing Linux firmware...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm linux-firmware linux-firmware-marvell
+# ============================================================================
+# Linux firmware (CRITICAL for hardware support - WiFi, audio, touchpad, etc)
+# ============================================================================
+echo -e "${BLUE}Installing comprehensive Linux firmware...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    linux-firmware \
+    linux-firmware-marvell \
+    linux-firmware-bnx2x \
+    linux-firmware-liquidio \
+    linux-firmware-mellanox \
+    linux-firmware-nfp \
+    linux-firmware-qcom \
+    linux-firmware-qlogic \
+    linux-firmware-whence
+
+echo -e "${GREEN}✓ Linux firmware installed${NC}"
 
 # CPU microcode (Intel and AMD)
 echo -e "${BLUE}Installing CPU microcode...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm intel-ucode amd-ucode
 
-# Audio stack (PipeWire)
-echo -e "${BLUE}Installing audio stack...${NC}"
-echo -e "${BLUE}Installing audio stack (PipeWire)...${NC}"
+# ============================================================================
+# Audio stack (PipeWire) - CRITICAL for working audio
+# ============================================================================
+echo -e "${BLUE}Installing PipeWire audio stack...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     # Install pipewire-jack which will prompt to replace jack2
     # 'yes' command auto-answers the prompt
@@ -202,29 +224,55 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     }
 "
 
-# KDE Audio Applet
+# KDE Audio Applet and volume control
 echo -e "${BLUE}Installing KDE audio applet...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-pa
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-pa pavucontrol
 
 # ALSA utilities and firmware (required for audio hardware detection)
 echo -e "${BLUE}Installing ALSA utilities and firmware...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm alsa-utils alsa-firmware alsa-plugins
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    alsa-utils \
+    alsa-firmware \
+    alsa-plugins \
+    alsa-lib \
+    alsa-topology-conf \
+    alsa-ucm-conf
 
 # RealtimeKit and Sound Open Firmware (CRITICAL for PipeWire audio)
 echo -e "${BLUE}Installing RealtimeKit and SOF firmware for real-time audio...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm rtkit sof-firmware
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    rtkit \
+    sof-firmware \
+    alsa-card-profiles
+
+echo -e "${GREEN}✓ PipeWire audio stack installed${NC}"
 
 # Cursor themes
 echo -e "${BLUE}Installing cursor themes...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm xcursor-themes breeze breeze-icons adwaita-cursors
 
-# Networking
-echo -e "${BLUE}Installing networking...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm networkmanager plasma-nm
+# ============================================================================
+# Networking and WiFi (CRITICAL for live boot connectivity)
+# ============================================================================
+echo -e "${BLUE}Installing networking stack...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    networkmanager \
+    plasma-nm \
+    network-manager-applet
 
 # WiFi authentication and tools (CRITICAL for password-protected networks)
-echo -e "${BLUE}Installing WiFi authentication tools...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm wpa_supplicant iw wireless_tools wireless-regdb
+echo -e "${BLUE}Installing WiFi authentication and management tools...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    wpa_supplicant \
+    iw \
+    wireless_tools \
+    wireless-regdb \
+    crda \
+    dialog \
+    dhcpcd \
+    modemmanager
+
+echo -e "${GREEN}✓ WiFi tools installed${NC}"
 
 # Bluetooth
 echo -e "${BLUE}Installing Bluetooth...${NC}"
@@ -261,24 +309,113 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm python-numpy python-
 echo -e "${BLUE}Installing essential applications...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm firefox konsole dolphin kate
 
-# Touchpad/Input drivers
-echo -e "${BLUE}Installing input drivers...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm libinput xf86-input-libinput xorg-xinput
+# ============================================================================
+# Touchpad/Input drivers (CRITICAL for laptop touchpad functionality)
+# ============================================================================
+echo -e "${BLUE}Installing input drivers and utilities...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    libinput \
+    xf86-input-libinput \
+    xorg-xinput \
+    xf86-input-evdev \
+    xf86-input-synaptics
 
 # Input device debugging tools (for troubleshooting touchpad issues)
 echo -e "${BLUE}Installing input debugging tools...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm evtest
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm evtest libevdev
 
-# Ensure kernel modules for touchpad/touchscreen are available
-# linux-firmware (installed above) provides firmware for these modules
-# Modules (psmouse, i2c_hid, hid_multitouch) will load automatically via udev
-echo -e "${BLUE}Configuring input device kernel modules...${NC}"
+echo -e "${GREEN}✓ Input drivers installed${NC}"
+
+# ============================================================================
+# Kernel module configuration for hardware support
+# ============================================================================
+echo -e "${BLUE}Configuring kernel modules for hardware support...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
-    # Create modprobe configuration to ensure modules are available
-    # Modules will load automatically when hardware is detected
-    echo 'options psmouse proto=auto' > /etc/modprobe.d/psmouse.conf 2>/dev/null || true
-    echo 'options i2c_hid delay_override=1' > /etc/modprobe.d/i2c_hid.conf 2>/dev/null || true
+    # Create modprobe configurations for input devices
+    mkdir -p /etc/modprobe.d
+
+    # Touchpad configuration
+    echo 'options psmouse proto=auto' > /etc/modprobe.d/psmouse.conf
+    echo 'options i2c_hid delay_override=1' > /etc/modprobe.d/i2c_hid.conf
+
+    # Audio configuration - enable power saving for HDA Intel
+    echo 'options snd_hda_intel power_save=1' > /etc/modprobe.d/audio.conf
+
+    # WiFi configuration - enable power management for iwlwifi
+    echo 'options iwlwifi power_save=1' > /etc/modprobe.d/wifi.conf
+
+    # Bluetooth configuration
+    echo 'options btusb enable_autosuspend=0' > /etc/modprobe.d/bluetooth.conf
 " || true
+
+echo -e "${GREEN}✓ Kernel modules configured${NC}"
+
+# Create modules-load configuration to ensure critical modules load at boot
+echo -e "${BLUE}Configuring automatic module loading at boot...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    mkdir -p /etc/modules-load.d
+
+    # Load WiFi modules
+    cat > /etc/modules-load.d/wifi.conf << 'WIFIEOF'
+# WiFi kernel modules
+iwlwifi
+mt76_connac_lib
+rtw88_core
+brcmfmac
+WIFIEOF
+
+    # Load audio modules
+    cat > /etc/modules-load.d/audio.conf << 'AUDIOEOF'
+# Audio kernel modules
+snd_hda_intel
+snd_hda_codec_generic
+snd_hda_codec_realtek
+snd_hda_codec_hdmi
+snd_soc_core
+AUDIOEOF
+
+    # Load input device modules
+    cat > /etc/modules-load.d/input.conf << 'INPUTEOF'
+# Input device kernel modules
+i2c_hid
+i2c_hid_acpi
+hid_multitouch
+psmouse
+usbhid
+INPUTEOF
+
+    # Load bluetooth modules
+    cat > /etc/modules-load.d/bluetooth.conf << 'BTEOF'
+# Bluetooth kernel modules
+btusb
+btintel
+btrtl
+BTEOF
+" || true
+
+echo -e "${GREEN}✓ Automatic module loading configured${NC}"
+
+# Configure ALSA to work properly with PipeWire
+echo -e "${BLUE}Configuring ALSA for PipeWire compatibility...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    mkdir -p /etc/alsa/conf.d
+
+    # Create ALSA configuration for PipeWire
+    cat > /etc/alsa/conf.d/99-pipewire-default.conf << 'ALSAEOF'
+pcm.!default {
+    type pipewire
+}
+
+ctl.!default {
+    type pipewire
+}
+ALSAEOF
+
+    # Ensure user is in audio group (for root in live boot)
+    usermod -aG audio root 2>/dev/null || true
+" || true
+
+echo -e "${GREEN}✓ ALSA configured for PipeWire${NC}"
 
 # ============================================================================
 # CRITICAL FIX: Create mkinitcpio.conf for maximum hardware compatibility
@@ -402,6 +539,9 @@ HOOKS=(
     fsck          # Filesystem check
 )
 
+# Note: Firmware files from /usr/lib/firmware/ are automatically included
+# when corresponding kernel modules are added to the initramfs
+
 # ============================================================================
 # COMPRESSION - Use zstd for fast decompression during boot
 # ============================================================================
@@ -463,10 +603,17 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable dhcpcd.service 2>/dev/nu
 echo -e "${BLUE}Enabling systemd-resolved...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable systemd-resolved.service
 
-# Enable NetworkManager and other services
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable sddm
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable bluetooth
+# Enable NetworkManager and other critical services
+echo -e "${BLUE}Enabling NetworkManager and other services...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable sddm.service
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager.service
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager-wait-online.service
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager-dispatcher.service
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable wpa_supplicant.service
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable bluetooth.service
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable ModemManager.service
+
+echo -e "${GREEN}✓ Services enabled${NC}"
 
 # Step 8.5: Enable PipeWire audio services for root user (autologin)
 echo -e "${BLUE}Enabling PipeWire audio services for root user...${NC}"
@@ -494,18 +641,24 @@ sudo tee "${SQUASHFS_ROOTFS}/etc/profile.d/pipewire-start.sh" > /dev/null << 'EO
 # PipeWire autostart script for live ISO
 # Starts PipeWire services when user session begins
 
-# Only run if PipeWire is not already running
-if ! systemctl --user is-active --quiet pipewire.service 2>/dev/null; then
-    # Ensure systemd user instance is running
-    if ! systemctl --user is-system-running >/dev/null 2>&1; then
-        # Start systemd user instance
-        systemctl --user start default.target 2>/dev/null || true
+# Only run in interactive shell with user session
+if [ -n "$PS1" ] && [ -n "$XDG_RUNTIME_DIR" ]; then
+    # Only run if PipeWire is not already running
+    if ! systemctl --user is-active --quiet pipewire.service 2>/dev/null; then
+        # Ensure systemd user instance is running
+        if ! systemctl --user is-system-running >/dev/null 2>&1; then
+            # Start systemd user instance
+            systemctl --user start default.target 2>/dev/null || true
+        fi
+
+        # Start PipeWire services with delay to ensure system is ready
+        (
+            sleep 2
+            systemctl --user start pipewire.service 2>/dev/null || true
+            systemctl --user start wireplumber.service 2>/dev/null || true
+            systemctl --user start pipewire-pulse.service 2>/dev/null || true
+        ) &
     fi
-    
-    # Start PipeWire services
-    systemctl --user start pipewire.service 2>/dev/null || true
-    systemctl --user start wireplumber.service 2>/dev/null || true
-    systemctl --user start pipewire-pulse.service 2>/dev/null || true
 fi
 EOF
 
@@ -527,6 +680,33 @@ sudo chmod +x "${SQUASHFS_ROOTFS}/root/.config/plasma-workspace/env/pipewire.sh"
 sudo chown -R root:root "${SQUASHFS_ROOTFS}/root/.config/plasma-workspace/env/pipewire.sh" 2>/dev/null || true
 
 echo -e "${GREEN}✓ PipeWire autostart scripts created${NC}"
+
+# Step 8.7: Configure NetworkManager for proper WiFi support
+echo -e "${BLUE}Configuring NetworkManager for WiFi...${NC}"
+sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/NetworkManager/conf.d"
+
+# Configure NetworkManager to use wpa_supplicant backend (not iwd)
+sudo tee "${SQUASHFS_ROOTFS}/etc/NetworkManager/conf.d/wifi-backend.conf" > /dev/null << 'EOF'
+[device]
+wifi.backend=wpa_supplicant
+EOF
+
+# Enable WiFi and networking
+sudo tee "${SQUASHFS_ROOTFS}/etc/NetworkManager/conf.d/wifi.conf" > /dev/null << 'EOF'
+[main]
+plugins=keyfile
+
+[keyfile]
+unmanaged-devices=none
+
+[device]
+wifi.scan-rand-mac-address=yes
+
+[connection]
+wifi.powersave=2
+EOF
+
+echo -e "${GREEN}✓ NetworkManager configured for WiFi${NC}"
 
 # Step 9: Configure SDDM autologin for live boot
 echo -e "${BLUE}Configuring SDDM autologin for live boot...${NC}"
