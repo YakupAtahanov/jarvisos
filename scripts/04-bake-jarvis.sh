@@ -129,11 +129,9 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     }
 "
 
-# Enable Ollama service
-echo -e "${BLUE}Enabling Ollama service...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable ollama || {
-    echo -e "${YELLOW}Warning: Could not enable Ollama service (may need manual setup)${NC}"
-}
+# Note: We skip enabling Ollama service here since systemd is not running in arch-chroot
+# The Ollama service will need to be enabled on first boot, or users can run 'ollama serve' manually
+echo -e "${BLUE}Ollama installed - service can be enabled after first boot${NC}"
 
 # Step 5: Create jarvis user and group
 echo -e "${BLUE}Creating jarvis user and group...${NC}"
