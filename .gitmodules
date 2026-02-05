@@ -2,3 +2,6 @@
 	path = Project-JARVIS
 	url = git@github.com:YakupAtahanov/Project-JARVIS.git
 	branch = linux-integration-preparation
+[submodule "linux"]
+	path = linux
+	url = git@github.com:majdaltouzach/linux.git
