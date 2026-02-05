@@ -222,3 +222,4 @@ build-deps/archlinux*.iso
 CLAUDE.md
 FIRMWARE_FIXES.md
 *.png
+error.txt
