@@ -47,19 +47,33 @@ if [ -z "${SQUASHFS_FILE}" ] || [ ! -f "${SQUASHFS_FILE}" ]; then
 fi
 
 # ============================================================================
-# CRITICAL: Copy kernel and initramfs from rootfs to ISO structure
+# CRITICAL: Copy kernel and initramfs to ISO structure
 # ============================================================================
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Copying kernel and initramfs from rootfs to ISO...${NC}"
+echo -e "${BLUE}Copying kernel and initramfs to ISO...${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-# Define paths
+# Define paths - try multiple sources for kernel files
+KERNEL_BACKUP_DIR="${BUILD_DIR}/kernel-files"
 ROOTFS_BOOT="${BUILD_DIR}/iso-rootfs/boot"
 ISO_BOOT_DIR="${ISO_EXTRACT_DIR}/arch/boot/x86_64"
 
-# Verify rootfs boot directory exists
-if ! sudo test -d "${ROOTFS_BOOT}"; then
-    echo -e "${RED}Error: Rootfs boot directory not found at ${ROOTFS_BOOT}${NC}" >&2
+# Determine source directory for kernel files (prefer backup, fallback to rootfs)
+KERNEL_SOURCE=""
+if [ -d "${KERNEL_BACKUP_DIR}" ] && [ -f "${KERNEL_BACKUP_DIR}/vmlinuz-linux" ]; then
+    KERNEL_SOURCE="${KERNEL_BACKUP_DIR}"
+    echo -e "${BLUE}Using kernel files from backup directory${NC}"
+elif sudo test -d "${ROOTFS_BOOT}" && sudo test -f "${ROOTFS_BOOT}/vmlinuz-linux"; then
+    KERNEL_SOURCE="${ROOTFS_BOOT}"
+    echo -e "${BLUE}Using kernel files from rootfs boot directory${NC}"
+else
+    echo -e "${RED}FATAL ERROR: Cannot find kernel files!${NC}" >&2
+    echo -e "${YELLOW}Searched locations:${NC}"
+    echo -e "${YELLOW}  1. ${KERNEL_BACKUP_DIR}${NC}"
+    echo -e "${YELLOW}  2. ${ROOTFS_BOOT}${NC}"
+    echo ""
+    echo -e "${RED}The kernel was not installed or backed up during step 3.${NC}"
+    echo -e "${YELLOW}Please run: make step3${NC}"
     exit 1
 fi
 
@@ -68,32 +82,41 @@ mkdir -p "${ISO_BOOT_DIR}"
 
 # Copy kernel (vmlinuz-linux)
 echo -e "${BLUE}Copying kernel...${NC}"
-if sudo test -f "${ROOTFS_BOOT}/vmlinuz-linux"; then
-    sudo cp "${ROOTFS_BOOT}/vmlinuz-linux" "${ISO_BOOT_DIR}/"
-    KERNEL_SIZE=$(sudo du -h "${ROOTFS_BOOT}/vmlinuz-linux" | cut -f1)
-    echo -e "${GREEN}✓ Copied vmlinuz-linux (${KERNEL_SIZE})${NC}"
+if [ "${KERNEL_SOURCE}" = "${KERNEL_BACKUP_DIR}" ]; then
+    cp "${KERNEL_SOURCE}/vmlinuz-linux" "${ISO_BOOT_DIR}/"
 else
-    echo -e "${RED}Error: vmlinuz-linux not found in rootfs${NC}" >&2
-    exit 1
+    sudo cp "${KERNEL_SOURCE}/vmlinuz-linux" "${ISO_BOOT_DIR}/"
 fi
+KERNEL_SIZE=$(du -h "${ISO_BOOT_DIR}/vmlinuz-linux" | cut -f1)
+echo -e "${GREEN}✓ Copied vmlinuz-linux (${KERNEL_SIZE})${NC}"
 
 # Copy main initramfs (initramfs-linux.img)
 echo -e "${BLUE}Copying initramfs...${NC}"
-if sudo test -f "${ROOTFS_BOOT}/initramfs-linux.img"; then
-    sudo cp "${ROOTFS_BOOT}/initramfs-linux.img" "${ISO_BOOT_DIR}/"
-    INITRAMFS_SIZE=$(sudo du -h "${ROOTFS_BOOT}/initramfs-linux.img" | cut -f1)
-    echo -e "${GREEN}✓ Copied initramfs-linux.img (${INITRAMFS_SIZE})${NC}"
-    echo -e "${GREEN}  This initramfs contains ALL hardware modules${NC}"
+if [ "${KERNEL_SOURCE}" = "${KERNEL_BACKUP_DIR}" ]; then
+    cp "${KERNEL_SOURCE}/initramfs-linux.img" "${ISO_BOOT_DIR}/"
 else
-    echo -e "${RED}Error: initramfs-linux.img not found in rootfs${NC}" >&2
-    exit 1
+    sudo cp "${KERNEL_SOURCE}/initramfs-linux.img" "${ISO_BOOT_DIR}/"
 fi
+INITRAMFS_SIZE=$(du -h "${ISO_BOOT_DIR}/initramfs-linux.img" | cut -f1)
+echo -e "${GREEN}✓ Copied initramfs-linux.img (${INITRAMFS_SIZE})${NC}"
+echo -e "${GREEN}  This initramfs contains ALL hardware modules${NC}"
 
 # Copy fallback initramfs if it exists
-if sudo test -f "${ROOTFS_BOOT}/initramfs-linux-fallback.img"; then
+FALLBACK_EXISTS=false
+if [ "${KERNEL_SOURCE}" = "${KERNEL_BACKUP_DIR}" ]; then
+    [ -f "${KERNEL_SOURCE}/initramfs-linux-fallback.img" ] && FALLBACK_EXISTS=true
+else
+    sudo test -f "${KERNEL_SOURCE}/initramfs-linux-fallback.img" && FALLBACK_EXISTS=true
+fi
+
+if [ "${FALLBACK_EXISTS}" = true ]; then
     echo -e "${BLUE}Copying fallback initramfs...${NC}"
-    sudo cp "${ROOTFS_BOOT}/initramfs-linux-fallback.img" "${ISO_BOOT_DIR}/"
-    FALLBACK_SIZE=$(sudo du -h "${ROOTFS_BOOT}/initramfs-linux-fallback.img" | cut -f1)
+    if [ "${KERNEL_SOURCE}" = "${KERNEL_BACKUP_DIR}" ]; then
+        cp "${KERNEL_SOURCE}/initramfs-linux-fallback.img" "${ISO_BOOT_DIR}/"
+    else
+        sudo cp "${KERNEL_SOURCE}/initramfs-linux-fallback.img" "${ISO_BOOT_DIR}/"
+    fi
+    FALLBACK_SIZE=$(du -h "${ISO_BOOT_DIR}/initramfs-linux-fallback.img" | cut -f1)
     echo -e "${GREEN}✓ Copied initramfs-linux-fallback.img (${FALLBACK_SIZE})${NC}"
 fi
 
@@ -101,9 +124,20 @@ fi
 echo -e "${BLUE}Copying microcode images...${NC}"
 MICROCODE_COPIED=0
 for ucode in amd-ucode.img intel-ucode.img; do
-    if sudo test -f "${ROOTFS_BOOT}/${ucode}"; then
-        sudo cp "${ROOTFS_BOOT}/${ucode}" "${ISO_BOOT_DIR}/"
-        UCODE_SIZE=$(sudo du -h "${ROOTFS_BOOT}/${ucode}" | cut -f1)
+    UCODE_EXISTS=false
+    if [ "${KERNEL_SOURCE}" = "${KERNEL_BACKUP_DIR}" ]; then
+        [ -f "${KERNEL_SOURCE}/${ucode}" ] && UCODE_EXISTS=true
+    else
+        sudo test -f "${KERNEL_SOURCE}/${ucode}" && UCODE_EXISTS=true
+    fi
+
+    if [ "${UCODE_EXISTS}" = true ]; then
+        if [ "${KERNEL_SOURCE}" = "${KERNEL_BACKUP_DIR}" ]; then
+            cp "${KERNEL_SOURCE}/${ucode}" "${ISO_BOOT_DIR}/"
+        else
+            sudo cp "${KERNEL_SOURCE}/${ucode}" "${ISO_BOOT_DIR}/"
+        fi
+        UCODE_SIZE=$(du -h "${ISO_BOOT_DIR}/${ucode}" | cut -f1)
         echo -e "${GREEN}✓ Copied ${ucode} (${UCODE_SIZE})${NC}"
         MICROCODE_COPIED=1
     fi
@@ -116,17 +150,16 @@ fi
 # Verify files were copied correctly
 echo -e "${BLUE}Verifying copied files...${NC}"
 if [ ! -f "${ISO_BOOT_DIR}/vmlinuz-linux" ] || [ ! -f "${ISO_BOOT_DIR}/initramfs-linux.img" ]; then
-    echo -e "${RED}Error: Failed to copy kernel/initramfs to ISO structure${NC}" >&2
+    echo -e "${RED}FATAL: Failed to copy kernel/initramfs to ISO structure${NC}" >&2
+    echo -e "${YELLOW}ISO boot directory contents:${NC}"
+    ls -lah "${ISO_BOOT_DIR}/" || true
     exit 1
 fi
 
-# Show before/after comparison
+# Show file info
 echo ""
-echo -e "${BLUE}File timestamps:${NC}"
-echo -e "${BLUE}Source (rootfs):${NC}"
-sudo ls -lh "${ROOTFS_BOOT}/vmlinuz-linux" "${ROOTFS_BOOT}/initramfs-linux.img" | awk '{print "  " $6, $7, $8, $9}'
-echo -e "${BLUE}Destination (ISO):${NC}"
-ls -lh "${ISO_BOOT_DIR}/vmlinuz-linux" "${ISO_BOOT_DIR}/initramfs-linux.img" | awk '{print "  " $6, $7, $8, $9}'
+echo -e "${BLUE}Kernel files in ISO structure:${NC}"
+ls -lh "${ISO_BOOT_DIR}"/vmlinuz-linux "${ISO_BOOT_DIR}"/initramfs-linux* 2>/dev/null | awk '{print "  " $5, $9}'
 
 echo ""
 echo -e "${GREEN}✓ Kernel and initramfs successfully copied to ISO structure${NC}"

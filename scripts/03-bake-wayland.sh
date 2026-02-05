@@ -170,9 +170,19 @@ fi
 # CRITICAL: Install Linux kernel package
 # ============================================================================
 echo -e "${BLUE}Installing Linux kernel...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm linux linux-headers
+if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm linux linux-headers 2>&1; then
+    echo -e "${RED}FATAL: Failed to install linux kernel package${NC}" >&2
+    exit 1
+fi
 
-echo -e "${GREEN}✓ Linux kernel installed${NC}"
+# Verify kernel package was installed
+if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Q linux >/dev/null 2>&1; then
+    echo -e "${RED}FATAL: Linux kernel package not found after installation${NC}" >&2
+    exit 1
+fi
+
+KERNEL_VERSION=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Q linux | awk '{print $2}')
+echo -e "${GREEN}✓ Linux kernel installed: ${KERNEL_VERSION}${NC}"
 
 # Step 6: Install GUI packages in groups
 echo -e "${BLUE}Installing GUI packages...${NC}"
@@ -558,13 +568,97 @@ echo -e "${BLUE}  - Added explicit MODULES array with all critical hardware${NC}
 echo -e "${BLUE}  - Initramfs will now work on ANY hardware${NC}"
 echo ""
 
+# ============================================================================
+# Pre-check: Verify kernel modules directory exists
+# ============================================================================
+echo -e "${BLUE}Verifying kernel installation...${NC}"
+KERNEL_MODULES_DIR=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" find /usr/lib/modules -maxdepth 1 -type d -name "*-linux" 2>/dev/null | head -1)
+if [ -z "${KERNEL_MODULES_DIR}" ]; then
+    echo -e "${RED}FATAL: Kernel modules directory not found in /usr/lib/modules/${NC}" >&2
+    echo -e "${YELLOW}Available directories:${NC}"
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" ls -la /usr/lib/modules/ || true
+    exit 1
+fi
+echo -e "${GREEN}✓ Found kernel modules: ${KERNEL_MODULES_DIR}${NC}"
+
+# Ensure boot directory exists with correct permissions
+sudo arch-chroot "${SQUASHFS_ROOTFS}" mkdir -p /boot
+sudo arch-chroot "${SQUASHFS_ROOTFS}" chmod 755 /boot
+
 # Rebuild initramfs to include firmware and ALL kernel modules
 # This ensures firmware files (linux-firmware) are available during early boot
 # and ALL hardware modules are included (not just build machine's hardware)
 echo -e "${BLUE}Rebuilding initramfs with firmware support and all hardware modules...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" mkinitcpio -P || {
-    echo -e "${YELLOW}Warning: mkinitcpio had issues, but continuing...${NC}"
-}
+echo -e "${BLUE}This may take several minutes...${NC}"
+
+# Run mkinitcpio with verbose output for debugging
+MKINITCPIO_OUTPUT=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" mkinitcpio -P 2>&1)
+MKINITCPIO_EXIT=$?
+
+if [ ${MKINITCPIO_EXIT} -ne 0 ]; then
+    echo -e "${RED}FATAL: mkinitcpio failed to generate initramfs${NC}" >&2
+    echo -e "${YELLOW}mkinitcpio output:${NC}"
+    echo "${MKINITCPIO_OUTPUT}"
+    echo ""
+    echo -e "${YELLOW}Checking for common issues:${NC}"
+    echo -e "${BLUE}Boot directory:${NC}"
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" ls -la /boot/ || true
+    echo -e "${BLUE}Kernel modules:${NC}"
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" ls -la /usr/lib/modules/ || true
+    exit 1
+fi
+
+# Show last 20 lines of output
+echo "${MKINITCPIO_OUTPUT}" | tail -20
+echo -e "${GREEN}✓ mkinitcpio completed successfully${NC}"
+
+# ============================================================================
+# CRITICAL: Verify kernel files were created
+# ============================================================================
+echo -e "${BLUE}Verifying kernel files were generated...${NC}"
+if ! sudo test -f "${SQUASHFS_ROOTFS}/boot/vmlinuz-linux"; then
+    echo -e "${RED}FATAL: vmlinuz-linux was not created!${NC}" >&2
+    echo -e "${YELLOW}Boot directory contents:${NC}"
+    sudo ls -lah "${SQUASHFS_ROOTFS}/boot/" || true
+    exit 1
+fi
+
+if ! sudo test -f "${SQUASHFS_ROOTFS}/boot/initramfs-linux.img"; then
+    echo -e "${RED}FATAL: initramfs-linux.img was not created!${NC}" >&2
+    echo -e "${YELLOW}Boot directory contents:${NC}"
+    sudo ls -lah "${SQUASHFS_ROOTFS}/boot/" || true
+    exit 1
+fi
+
+KERNEL_SIZE=$(sudo du -h "${SQUASHFS_ROOTFS}/boot/vmlinuz-linux" | cut -f1)
+INITRAMFS_SIZE=$(sudo du -h "${SQUASHFS_ROOTFS}/boot/initramfs-linux.img" | cut -f1)
+
+echo -e "${GREEN}✓ Kernel files verified:${NC}"
+echo -e "${GREEN}  - vmlinuz-linux (${KERNEL_SIZE})${NC}"
+echo -e "${GREEN}  - initramfs-linux.img (${INITRAMFS_SIZE})${NC}"
+
+# ============================================================================
+# CRITICAL: Copy kernel files outside rootfs for later use
+# ============================================================================
+# The kernel files will be needed by step 7 (rebuild-iso) to copy into the ISO
+# structure. We copy them out now to ensure they're accessible even if rootfs
+# is modified or cleaned up by subsequent steps.
+echo -e "${BLUE}Preserving kernel files for ISO build...${NC}"
+KERNEL_BACKUP_DIR="${BUILD_DIR}/kernel-files"
+sudo mkdir -p "${KERNEL_BACKUP_DIR}"
+sudo cp "${SQUASHFS_ROOTFS}/boot/vmlinuz-linux" "${KERNEL_BACKUP_DIR}/"
+sudo cp "${SQUASHFS_ROOTFS}/boot/initramfs-linux.img" "${KERNEL_BACKUP_DIR}/"
+if sudo test -f "${SQUASHFS_ROOTFS}/boot/initramfs-linux-fallback.img"; then
+    sudo cp "${SQUASHFS_ROOTFS}/boot/initramfs-linux-fallback.img" "${KERNEL_BACKUP_DIR}/"
+fi
+if sudo test -f "${SQUASHFS_ROOTFS}/boot/amd-ucode.img"; then
+    sudo cp "${SQUASHFS_ROOTFS}/boot/amd-ucode.img" "${KERNEL_BACKUP_DIR}/"
+fi
+if sudo test -f "${SQUASHFS_ROOTFS}/boot/intel-ucode.img"; then
+    sudo cp "${SQUASHFS_ROOTFS}/boot/intel-ucode.img" "${KERNEL_BACKUP_DIR}/"
+fi
+
+echo -e "${GREEN}✓ Kernel files backed up to ${KERNEL_BACKUP_DIR}${NC}"
 
 # Step 7: Ensure root user setup for autologin
 echo -e "${BLUE}Setting up root user for autologin...${NC}"
