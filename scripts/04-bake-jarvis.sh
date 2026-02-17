@@ -119,19 +119,70 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
 
 # Step 4: Install Ollama
 echo -e "${BLUE}Installing Ollama...${NC}"
+# The install.sh script tries to run systemd in chroot which will fail - we suppress that
+# We use a custom approach: download the binary and install it manually
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
-    curl -fsSL https://ollama.com/install.sh | sh || {
-        echo 'Warning: Ollama installation script failed, trying manual installation...'
-        # Fallback: download and install manually
-        curl -L https://ollama.com/download/ollama-linux-amd64 -o /tmp/ollama
-        chmod +x /tmp/ollama
-        mv /tmp/ollama /usr/local/bin/ollama || cp /tmp/ollama /usr/local/bin/ollama
-    }
+    # Try the official install script first (it handles binary download and GPU detection)
+    # OLLAMA_NO_SYSTEM_SERVICE=1 prevents systemd service creation in chroot
+    if curl -fsSL https://ollama.com/install.sh | OLLAMA_NO_SYSTEM_SERVICE=1 sh 2>/dev/null; then
+        echo '✓ Ollama installed via install.sh'
+    else
+        echo 'Warning: Ollama install.sh failed or not available, trying direct binary download...'
+        ARCH=\$(uname -m)
+        if [ \"\${ARCH}\" = 'x86_64' ]; then
+            OLLAMA_URL='https://ollama.com/download/ollama-linux-amd64'
+        elif [ \"\${ARCH}\" = 'aarch64' ]; then
+            OLLAMA_URL='https://ollama.com/download/ollama-linux-arm64'
+        else
+            echo 'Warning: Unsupported architecture for Ollama: '\${ARCH}
+            exit 0
+        fi
+
+        if curl -fsSL -o /usr/local/bin/ollama \"\${OLLAMA_URL}\"; then
+            chmod +x /usr/local/bin/ollama
+            echo '✓ Ollama binary installed manually'
+        else
+            echo 'Warning: Could not download Ollama binary - it can be installed later'
+            echo 'Run: curl -fsSL https://ollama.com/install.sh | sh'
+            exit 0
+        fi
+    fi
+
+    # Install systemd service file for use after installation (not enabled in chroot)
+    mkdir -p /usr/lib/systemd/system
+    cat > /usr/lib/systemd/system/ollama.service << 'OLLAMAEOF'
+[Unit]
+Description=Ollama Service
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/ollama serve
+User=ollama
+Group=ollama
+Restart=always
+RestartSec=3
+Environment=\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"
+Environment=\"HOME=/usr/share/ollama\"
+Environment=\"OLLAMA_HOST=0.0.0.0\"
+
+[Install]
+WantedBy=default.target
+OLLAMAEOF
+
+    # Create ollama user/group for the service
+    if ! getent group ollama >/dev/null 2>&1; then
+        groupadd -r ollama 2>/dev/null || true
+    fi
+    if ! getent passwd ollama >/dev/null 2>&1; then
+        useradd -r -g ollama -d /usr/share/ollama -s /bin/false -c 'Ollama Service' ollama 2>/dev/null || true
+    fi
+    mkdir -p /usr/share/ollama
+    chown -R ollama:ollama /usr/share/ollama 2>/dev/null || true
 "
 
-# Note: We skip enabling Ollama service here since systemd is not running in arch-chroot
-# The Ollama service will need to be enabled on first boot, or users can run 'ollama serve' manually
-echo -e "${BLUE}Ollama installed - service can be enabled after first boot${NC}"
+# Note: Ollama service not enabled in chroot (systemd not running)
+# It will be started via autostart on live boot, and can be enabled after installation
+echo -e "${BLUE}Ollama installed - service will autostart via XDG autostart on live boot${NC}"
 
 # Step 5: Create jarvis user and group
 echo -e "${BLUE}Creating jarvis user and group...${NC}"
@@ -297,10 +348,13 @@ VENV_PATH = Path("/var/lib/jarvis/venv")
 if VENV_PATH.exists():
     venv_python = VENV_PATH / "bin" / "python3"
     if venv_python.exists():
-        # Prepend venv site-packages to path
-        venv_site = VENV_PATH / "lib" / "python3" / "site-packages"
-        if venv_site.exists():
-            sys.path.insert(0, str(venv_site))
+        # Find the actual versioned site-packages directory (e.g., python3.12)
+        import glob
+        venv_site_pattern = str(VENV_PATH / "lib" / "python3*" / "site-packages")
+        venv_sites = glob.glob(venv_site_pattern)
+        for venv_site in venv_sites:
+            if Path(venv_site).exists():
+                sys.path.insert(0, venv_site)
 
 # Add JARVIS to Python path
 # The jarvis module is at /usr/lib/jarvis/, so add /usr/lib to path

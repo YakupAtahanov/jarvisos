@@ -64,8 +64,15 @@ echo -e "${BLUE}Rootfs: ${SQUASHFS_ROOTFS}${NC}"
 
 # Step 1: Copy DNS resolution file
 echo -e "${BLUE}Copying DNS resolution file...${NC}"
-if [ -f /etc/resolv.conf ]; then
-    sudo cp ${BUILD_DEPS_DIR}/resolv.conf "${SQUASHFS_ROOTFS}/etc/resolv.conf" 2>/dev/null || true
+# Prefer build-deps/resolv.conf (with known-good DNS), fallback to host resolv.conf
+if [ -f "${BUILD_DEPS_DIR}/resolv.conf" ]; then
+    sudo cp "${BUILD_DEPS_DIR}/resolv.conf" "${SQUASHFS_ROOTFS}/etc/resolv.conf" 2>/dev/null || true
+elif [ -f /etc/resolv.conf ]; then
+    sudo cp /etc/resolv.conf "${SQUASHFS_ROOTFS}/etc/resolv.conf" 2>/dev/null || true
+fi
+# Ensure resolv.conf has fallback DNS if empty or missing
+if [ ! -s "${SQUASHFS_ROOTFS}/etc/resolv.conf" ]; then
+    printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' | sudo tee "${SQUASHFS_ROOTFS}/etc/resolv.conf" > /dev/null
 fi
 
 # Step 2: Bind mount iso-rootfs to itself
@@ -193,7 +200,25 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm wayland wayland-prot
 
 # KDE Plasma Desktop Environment
 echo -e "${BLUE}Installing KDE Plasma Desktop Environment...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-meta kde-applications-meta sddm
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-meta sddm
+
+# Essential KDE applications (kde-applications-meta was removed from Arch repos)
+echo -e "${BLUE}Installing essential KDE applications...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    ark \
+    dolphin \
+    gwenview \
+    kate \
+    konsole \
+    okular \
+    spectacle \
+    elisa \
+    kcalc \
+    plasma-systemmonitor \
+    kwrite \
+    filelight \
+    partitionmanager \
+    kdeconnect
 
 # Graphics drivers
 echo -e "${BLUE}Installing graphics drivers...${NC}"
@@ -252,14 +277,14 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
 echo -e "${BLUE}Installing RealtimeKit and SOF firmware for real-time audio...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
     rtkit \
-    sof-firmware \
-    alsa-card-profiles
+    sof-firmware
+# Note: alsa-card-profiles is provided by pipewire-alsa, no need to install separately
 
 echo -e "${GREEN}✓ PipeWire audio stack installed${NC}"
 
 # Cursor themes
 echo -e "${BLUE}Installing cursor themes...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm xcursor-themes breeze breeze-icons adwaita-cursors
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm xcursor-themes breeze breeze-icons adwaita-icon-theme
 
 # ============================================================================
 # Networking and WiFi (CRITICAL for live boot connectivity)
@@ -277,10 +302,10 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
     iw \
     wireless_tools \
     wireless-regdb \
-    crda \
     dialog \
     dhcpcd \
     modemmanager
+# Note: crda was removed from Arch repos in 2021; wireless-regdb replaces it
 
 echo -e "${GREEN}✓ WiFi tools installed${NC}"
 
@@ -311,13 +336,21 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
     bind-tools \
     traceroute
 
-# Python packages
+# Python packages (use --needed to skip already-installed packages)
 echo -e "${BLUE}Installing Python packages...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm python-numpy python-scipy python-requests python-cryptography python-yaml python-toml
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
+    python-numpy \
+    python-scipy \
+    python-requests \
+    python-cryptography \
+    python-yaml \
+    python-tomli \
+    python-setuptools \
+    python-pip
 
-# Essential applications
+# Essential applications (browser - kate/konsole/dolphin already installed with KDE apps)
 echo -e "${BLUE}Installing essential applications...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm firefox konsole dolphin kate
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm firefox vlc
 
 # ============================================================================
 # Touchpad/Input drivers (CRITICAL for laptop touchpad functionality)
@@ -351,8 +384,8 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     # Audio configuration - enable power saving for HDA Intel
     echo 'options snd_hda_intel power_save=1' > /etc/modprobe.d/audio.conf
 
-    # WiFi configuration - enable power management for iwlwifi
-    echo 'options iwlwifi power_save=1' > /etc/modprobe.d/wifi.conf
+    # WiFi configuration - disable power management for iwlwifi (power saving causes connection drops)
+    echo 'options iwlwifi power_save=0' > /etc/modprobe.d/wifi.conf
 
     # Bluetooth configuration
     echo 'options btusb enable_autosuspend=0' > /etc/modprobe.d/bluetooth.conf
@@ -428,6 +461,21 @@ ALSAEOF
 echo -e "${GREEN}✓ ALSA configured for PipeWire${NC}"
 
 # ============================================================================
+# CRITICAL: Install archiso package for live boot hooks
+# ============================================================================
+# The archiso package provides the 'archiso' and 'memdisk' mkinitcpio hooks
+# These hooks are REQUIRED for the initramfs to mount the squashfs rootfs
+# during live boot. Without archiso hook, the kernel cannot find root.
+echo -e "${BLUE}Installing archiso package (live boot hooks)...${NC}"
+if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm archiso 2>&1; then
+    echo -e "${RED}FATAL: Failed to install archiso package${NC}" >&2
+    echo -e "${YELLOW}The archiso package provides memdisk and archiso mkinitcpio hooks${NC}"
+    echo -e "${YELLOW}Without these hooks, the live ISO CANNOT BOOT${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ archiso package installed (provides memdisk and archiso hooks)${NC}"
+
+# ============================================================================
 # CRITICAL FIX: Create mkinitcpio.conf for maximum hardware compatibility
 # ============================================================================
 # The 'autodetect' hook only includes modules for the BUILD machine's hardware
@@ -452,15 +500,21 @@ sudo tee "${SQUASHFS_ROOTFS}/etc/mkinitcpio.conf" > /dev/null << 'MKINITCPIO_EOF
 # MODULES - Explicitly list all critical hardware modules
 # ============================================================================
 MODULES=(
+    # ========================================================================
+    # LIVE BOOT CRITICAL - squashfs, overlay, loop MUST be in initramfs
+    # The archiso hook needs these to mount the live rootfs from the squashfs
+    # ========================================================================
+    squashfs overlay loop
+
     # Filesystem support
     ext4 vfat exfat ntfs3
-    
+
     # USB support (CRITICAL for live USB boot)
-    usb_storage uas
-    
+    usb_storage uas xhci_hcd xhci_pci ehci_hcd ehci_pci ohci_hcd
+
     # Storage controllers
-    ahci sd_mod nvme
-    
+    ahci sd_mod nvme nvme_core
+
     # ========================================================================
     # INPUT DEVICES (Touchpad, Touchscreen, Keyboard, Mouse)
     # ========================================================================
@@ -470,12 +524,12 @@ MODULES=(
     psmouse
     # I2C controller drivers (Intel, AMD, generic)
     i2c_i801 i2c_designware_platform i2c_designware_core
-    
+
     # ========================================================================
     # GRAPHICS DRIVERS (for display output)
     # ========================================================================
     i915 amdgpu radeon nouveau
-    
+
     # ========================================================================
     # AUDIO DRIVERS (Sound cards, speakers, microphones)
     # ========================================================================
@@ -486,38 +540,40 @@ MODULES=(
     snd_hda_codec_conexant snd_hda_codec_ca0132
     # SOF (Sound Open Firmware - modern Intel laptops)
     snd_soc_skl snd_soc_avs snd_soc_core
-    
+
     # ========================================================================
     # NETWORK DRIVERS
     # ========================================================================
     # Ethernet controllers
     e1000e r8169 igb ixgbe atlantic
-    
+
     # WiFi - Intel (most common)
     iwlwifi iwlmvm
-    
+
     # WiFi - MediaTek (MT7921, MT7922, etc)
     mt7921e mt76_connac_lib mt76
-    
+
     # WiFi - Realtek (RTW88 series)
     rtw88_8822ce rtw88_core rtw89_core rtw89_8852ae
-    
+
     # WiFi - Broadcom
     brcmfmac brcmutil
-    
+
     # WiFi - Atheros/Qualcomm
     ath10k_core ath10k_pci ath11k ath11k_pci
-    
+
     # ========================================================================
     # BLUETOOTH
     # ========================================================================
     btusb btintel btrtl btbcm
-    
+
     # ========================================================================
     # OTHER DEVICES
     # ========================================================================
     # Webcam
     uvcvideo
+    # DM for device mapper (used by some storage/crypto setups)
+    dm_mod
 )
 
 # ============================================================================
@@ -536,17 +592,22 @@ FILES=()
 # CRITICAL: 'autodetect' hook is REMOVED
 # autodetect only includes modules for the build machine's hardware
 # Without it, ALL modules in MODULES array are included
+#
+# CRITICAL: 'memdisk' and 'archiso' hooks REQUIRED for live boot
+# Without archiso hook, the kernel cannot find the root filesystem
+# The archiso hook: finds the live medium by label, mounts squashfs, sets up overlayfs
+# The memdisk hook: helper required by archiso for detecting the live medium
 HOOKS=(
     base          # Basic initramfs structure
-    udev          # Device manager
+    udev          # Device manager (needed to find live medium by label)
     modconf       # Load modules from /etc/modprobe.d/
     kms           # Kernel mode setting (graphics)
-    keyboard      # Keyboard support
+    memdisk       # REQUIRED: helper for archiso to detect live medium
+    archiso       # REQUIRED: mounts squashfs as rootfs with overlayfs for live boot
+    keyboard      # Keyboard support (for emergency shell)
     keymap        # Keyboard layout
-    consolefont   # Console font
     block         # Block device support
     filesystems   # Filesystem drivers
-    fsck          # Filesystem check
 )
 
 # Note: Firmware files from /usr/lib/firmware/ are automatically included
@@ -670,7 +731,7 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
         mkdir -p /root
         chmod 700 /root
     fi
-    
+
     # Create basic shell config files if they don't exist
     if [ ! -f /root/.bashrc ]; then
         cp /etc/skel/.bashrc /root/.bashrc 2>/dev/null || true
@@ -678,7 +739,24 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     if [ ! -f /root/.bash_profile ]; then
         cp /etc/skel/.bash_profile /root/.bash_profile 2>/dev/null || true
     fi
-    
+
+    # Remove root password for live boot (standard for Arch live ISO)
+    passwd -d root 2>/dev/null || true
+
+    # Generate default locale
+    sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+    sed -i 's/^#en_US ISO-8859-1/en_US ISO-8859-1/' /etc/locale.gen 2>/dev/null || true
+    locale-gen 2>/dev/null || true
+    echo 'LANG=en_US.UTF-8' > /etc/locale.conf
+
+    # Set hostname
+    echo 'jarvisos' > /etc/hostname
+    cat > /etc/hosts << 'HOSTSEOF'
+127.0.0.1   localhost
+::1         localhost
+127.0.1.1   jarvisos.localdomain jarvisos
+HOSTSEOF
+
     # Ensure root can login (check passwd entry)
     if ! getent passwd root >/dev/null 2>&1; then
         echo 'Warning: root user not found in passwd'
@@ -703,7 +781,9 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable systemd-resolved.service
 echo -e "${BLUE}Enabling NetworkManager and other services...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable sddm.service
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager.service
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager-wait-online.service
+# IMPORTANT: Disable NetworkManager-wait-online to prevent 90-second boot timeout
+# when no network is immediately available (common on live boot)
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable NetworkManager-wait-online.service 2>/dev/null || true
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager-dispatcher.service
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable wpa_supplicant.service
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable bluetooth.service

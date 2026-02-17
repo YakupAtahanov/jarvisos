@@ -17,7 +17,8 @@ SCRIPTS_DIR := $(PROJECT_ROOT)$(SCRIPTS_DIR)
 BUILD_DIR := $(PROJECT_ROOT)$(BUILD_DIR)
 BUILD_DEPS_DIR := $(PROJECT_ROOT)$(BUILD_DEPS_DIR)
 ISO_FILE := $(BUILD_DEPS_DIR)/$(ISO_FILE)
-ISO_EXTRACT_DIR := $(PROJECT_ROOT)$(ISO_EXTRACT_DIR)
+# ISO_EXTRACT_DIR is relative to BUILD_DIR (not PROJECT_ROOT)
+ISO_EXTRACT_DIR := $(BUILD_DIR)$(ISO_EXTRACT_DIR)
 
 # Colors
 RED := \033[0;31m
@@ -26,33 +27,39 @@ YELLOW := \033[1;33m
 BLUE := \033[0;34m
 NC := \033[0m
 
-.PHONY: help list status step1 step2 step3 step4 step5 step6 step7 all clean
+.PHONY: help list status step0 step1 step2 step3 step4 step5 step6 step7 all prereq clean
 
 # Default target
 help:
 	@echo "$(BLUE)JARVIS OS ISO Build Steps$(NC)"
 	@echo ""
 	@echo "Available steps:"
-	@echo "  $(GREEN)make step1$(NC)  - Extract ISO"
-	@echo "  $(GREEN)make step2$(NC)  - Unsquash filesystem"
-	@echo "  $(GREEN)make step3$(NC)  - Bake Wayland"
-	@echo "  $(GREEN)make step4$(NC)  - Bake JARVIS"
-	@echo "  $(GREEN)make step5$(NC)  - Bake Calamares (optional, not implemented yet)"
-	@echo "  $(GREEN)make step6$(NC)  - Rebuild SquashFS"
-	@echo "  $(GREEN)make step7$(NC)  - Rebuild ISO"
+	@echo "  $(GREEN)make prereq$(NC) - Install build prerequisites (step 0)"
+	@echo "  $(GREEN)make step1$(NC)  - Extract source Arch Linux ISO"
+	@echo "  $(GREEN)make step2$(NC)  - Unsquash filesystem from ISO"
+	@echo "  $(GREEN)make step3$(NC)  - Install KDE Plasma Wayland + all packages"
+	@echo "  $(GREEN)make step4$(NC)  - Install Project-JARVIS AI assistant"
+	@echo "  $(GREEN)make step5$(NC)  - Install Calamares graphical installer"
+	@echo "  $(GREEN)make step6$(NC)  - Rebuild SquashFS (compress rootfs)"
+	@echo "  $(GREEN)make step7$(NC)  - Rebuild bootable ISO"
 	@echo ""
 	@echo "Other targets:"
-	@echo "  $(GREEN)make all$(NC)    - Run all steps"
+	@echo "  $(GREEN)make all$(NC)    - Run all steps (1-7, requires prerequisites)"
 	@echo "  $(GREEN)make status$(NC) - Show build status"
 	@echo "  $(GREEN)make list$(NC)   - List available scripts"
 	@echo "  $(GREEN)make clean$(NC)  - Clean build artifacts"
+	@echo ""
+	@echo "$(YELLOW)Quick start:$(NC)"
+	@echo "  1. make prereq   (install host tools)"
+	@echo "  2. Place Arch ISO in build-deps/ and update ISO_FILE in build.config"
+	@echo "  3. make all      (build the full ISO)"
 	@echo ""
 
 # List available scripts
 list:
 	@echo "$(BLUE)Available build scripts:$(NC)"
-	@for script in 01-extract-iso.sh 02-unsquash-fs.sh 03-bake-wayland.sh \
-	               04-bake-calamares.sh 05-bake-jarvis.sh 06-squash-fs.sh \
+	@for script in 00-install-prereq.sh 01-extract-iso.sh 02-unsquash-fs.sh 03-bake-wayland.sh \
+	               04-bake-jarvis.sh 05-bake-calamares.sh 06-squash-fs.sh \
 	               07-rebuild-iso.sh; do \
 		if [ -f "$(SCRIPTS_DIR)/$$script" ]; then \
 			echo "  $(GREEN)✓$(NC) $$script"; \
@@ -90,6 +97,16 @@ status:
 		echo "  $(RED)✗$(NC) Step 7: Final ISO not found"; \
 	fi
 	@echo ""
+
+# Step 0: Install prerequisites (alias: prereq)
+step0 prereq:
+	@echo "$(BLUE)Step 0: Installing prerequisites...$(NC)"
+	@if [ ! -f "$(SCRIPTS_DIR)/00-install-prereq.sh" ]; then \
+		echo "$(RED)Error: Script not found: 00-install-prereq.sh$(NC)"; \
+		exit 1; \
+	fi
+	@bash $(SCRIPTS_DIR)/00-install-prereq.sh
+	@echo "$(GREEN)✓ Step 0 complete$(NC)"
 
 # Step 1: Extract ISO
 step1:

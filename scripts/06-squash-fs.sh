@@ -183,7 +183,7 @@ if [ -z "${SHA512_FILE}" ]; then
     # Create checksum file if it doesn't exist
     SHA512_FILE="${SQUASHFS_DIR}/airootfs.sha512"
 fi
-sha512sum "${SQUASHFS_FILE}" | cut -d' ' -f1 | sudo tee "${SHA512_FILE}" > /dev/null
+sha512sum "${SQUASHFS_FILE}" | sudo tee "${SHA512_FILE}" > /dev/null
 
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${GREEN}Step 6 complete: SquashFS rebuilt${NC}"
