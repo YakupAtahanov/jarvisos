@@ -4,8 +4,9 @@
 
 set -e
 
-# Source config file
+# Source config file and shared utilities
 source build.config
+source "$(dirname "${BASH_SOURCE[0]}")/build-utils.sh"
 
 # Validate required variables
 if [ -z "${SCRIPTS_DIR}" ]; then
@@ -169,8 +170,8 @@ echo ""
 
 # Check if xorriso is available
 if ! command -v xorriso &> /dev/null; then
-    echo -e "${RED}Error: xorriso not found. Please install libisoburn${NC}" >&2
-    echo -e "${YELLOW}Install with: sudo dnf install libisoburn${NC}"
+    echo -e "${RED}Error: xorriso not found.${NC}" >&2
+    echo -e "${YELLOW}Install: $(pkg_install_hint_multi "xorriso" "xorriso" "xorriso" "xorriso")${NC}"
     exit 1
 fi
 
@@ -490,16 +491,14 @@ create_efi_image() {
     
     echo -e "${BLUE}Creating EFI boot image from EFI/BOOT directory...${NC}"
     
-    # Check if required tools are available
+    # Check if required tools are available, auto-install if missing
     if ! command -v mkfs.fat &> /dev/null && ! command -v mkfs.vfat &> /dev/null; then
         echo -e "${YELLOW}Warning: mkfs.fat/mkfs.vfat not found. Attempting to install dosfstools...${NC}"
-        if command -v dnf &> /dev/null; then
-            sudo dnf install -y dosfstools 2>/dev/null || echo -e "${YELLOW}Could not install dosfstools automatically${NC}"
-        elif command -v apt-get &> /dev/null; then
-            sudo apt-get install -y dosfstools 2>/dev/null || echo -e "${YELLOW}Could not install dosfstools automatically${NC}"
-        fi
+        # install_host_package detects the running distro automatically
+        install_host_package "dosfstools" "dosfstools" "dosfstools" "dosfstools" 2>/dev/null || \
+            echo -e "${YELLOW}Could not install dosfstools automatically${NC}"
     fi
-    
+
     # Determine mkfs command
     local mkfs_cmd=""
     if command -v mkfs.fat &> /dev/null; then
@@ -508,7 +507,7 @@ create_efi_image() {
         mkfs_cmd="mkfs.vfat"
     else
         echo -e "${RED}Error: mkfs.fat or mkfs.vfat not found. Please install dosfstools${NC}" >&2
-        echo -e "${YELLOW}Install with: sudo dnf install dosfstools${NC}"
+        echo -e "${YELLOW}Install: $(pkg_install_hint dosfstools)${NC}"
         return 1
     fi
     

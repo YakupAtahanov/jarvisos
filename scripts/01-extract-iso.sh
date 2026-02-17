@@ -5,8 +5,9 @@
 
 set -e
 
-# Source config file
+# Source config file and shared utilities
 source build.config
+source "$(dirname "${BASH_SOURCE[0]}")/build-utils.sh"
 
 # Validate required variables
 if [ -z "${SCRIPTS_DIR}" ]; then
@@ -49,7 +50,8 @@ mkdir -p "${ISO_EXTRACT_DIR}"
 
 # Check if 7z is available
 if ! command -v 7z &> /dev/null; then
-    echo -e "${RED}Error: 7z not found. Please install p7zip or p7zip-full${NC}"
+    echo -e "${RED}Error: 7z not found.${NC}"
+    echo -e "${YELLOW}Install: $(pkg_install_hint_multi "p7zip" "p7zip p7zip-plugins" "p7zip-full" "p7zip")${NC}"
     exit 1
 fi
 

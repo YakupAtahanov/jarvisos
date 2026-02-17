@@ -5,6 +5,9 @@
 
 set -e
 
+# Source shared utilities (provides detect_host_distro, detect_pkg_family, install_host_package)
+source "$(dirname "${BASH_SOURCE[0]}")/build-utils.sh"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -16,19 +19,7 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${BLUE}Step 0: Installing Build Prerequisites${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-# Detect the host distribution
-detect_distro() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        echo "${ID}"
-    elif command -v lsb_release >/dev/null 2>&1; then
-        lsb_release -si | tr '[:upper:]' '[:lower:]'
-    else
-        echo "unknown"
-    fi
-}
-
-DISTRO=$(detect_distro)
+DISTRO=$(detect_host_distro)
 echo -e "${BLUE}Detected distribution: ${DISTRO}${NC}"
 
 # Required host packages:
@@ -145,41 +136,34 @@ install_opensuse() {
     echo -e "${GREEN}✓ openSUSE prerequisites installed${NC}"
 }
 
-# Install based on detected distro
-case "${DISTRO}" in
-    arch|cachyos|endeavouros|manjaro|garuda)
+# Install based on detected distro family (handles derivatives automatically)
+PKG_FAMILY=$(detect_pkg_family)
+echo -e "${BLUE}Package manager family: ${PKG_FAMILY}${NC}"
+
+case "${PKG_FAMILY}" in
+    arch)
         install_arch
         ;;
-    fedora|rhel|centos|rocky|almalinux)
+    fedora)
         install_fedora
         ;;
-    ubuntu|debian|linuxmint|pop)
+    debian)
         install_ubuntu
         ;;
-    opensuse*|sles)
+    opensuse)
         install_opensuse
         ;;
     *)
-        echo -e "${YELLOW}Warning: Unknown distribution '${DISTRO}'${NC}"
-        echo -e "${YELLOW}Attempting Arch Linux package manager (pacman)...${NC}"
-        if command -v pacman >/dev/null 2>&1; then
-            install_arch
-        elif command -v dnf >/dev/null 2>&1; then
-            install_fedora
-        elif command -v apt-get >/dev/null 2>&1; then
-            install_ubuntu
-        else
-            echo -e "${RED}Error: Cannot detect package manager.${NC}" >&2
-            echo -e "${YELLOW}Please manually install:${NC}"
-            echo "  - arch-install-scripts (arch-chroot)"
-            echo "  - squashfs-tools (mksquashfs, unsquashfs)"
-            echo "  - xorriso (ISO building)"
-            echo "  - p7zip (7z, ISO extraction)"
-            echo "  - dosfstools (mkfs.fat)"
-            echo "  - fakeroot (makepkg)"
-            echo "  - git, curl, wget, python3"
-            exit 1
-        fi
+        echo -e "${RED}Error: Cannot detect package manager for '${DISTRO}'.${NC}" >&2
+        echo -e "${YELLOW}Please manually install:${NC}"
+        echo "  - arch-install-scripts (provides arch-chroot)"
+        echo "  - squashfs-tools       (provides mksquashfs, unsquashfs)"
+        echo "  - xorriso              (ISO building)"
+        echo "  - p7zip / p7zip-full   (provides 7z for ISO extraction)"
+        echo "  - dosfstools           (provides mkfs.fat)"
+        echo "  - fakeroot             (required for makepkg)"
+        echo "  - git, curl, wget, python3"
+        exit 1
         ;;
 esac
 

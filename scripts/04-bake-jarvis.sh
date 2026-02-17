@@ -4,8 +4,9 @@
 
 set -e
 
-# Source config file
+# Source config file and shared utilities
 source build.config
+source "$(dirname "${BASH_SOURCE[0]}")/build-utils.sh"
 
 # Validate required variables
 if [ -z "${SCRIPTS_DIR}" ]; then
@@ -51,19 +52,8 @@ if [ ! -d "${PROJECT_JARVIS}" ]; then
     exit 1
 fi
 
-# Determine chroot command
-if command -v arch-chroot >/dev/null 2>&1; then
-    CHROOT_CMD="arch-chroot"
-    echo -e "${BLUE}Using arch-chroot${NC}"
-elif command -v systemd-nspawn >/dev/null 2>&1; then
-    CHROOT_CMD="systemd-nspawn"
-    echo -e "${YELLOW}Using systemd-nspawn (arch-chroot not found)${NC}"
-    echo -e "${YELLOW}Tip: Install arch-install-scripts for better compatibility${NC}"
-else
-    echo -e "${RED}Error: Need arch-chroot or systemd-nspawn!${NC}" >&2
-    echo -e "${YELLOW}Install: sudo dnf install arch-install-scripts${NC}"
-    exit 1
-fi
+# Determine chroot command (distro-aware error messages via build-utils.sh)
+detect_chroot_cmd
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}Step 4: Installing Project-JARVIS${NC}"

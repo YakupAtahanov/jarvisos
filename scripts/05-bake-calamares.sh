@@ -4,8 +4,9 @@
 
 set -e
 
-# Source config file
+# Source config file and shared utilities
 source build.config
+source "$(dirname "${BASH_SOURCE[0]}")/build-utils.sh"
 
 # Validate required variables
 if [ -z "${SCRIPTS_DIR}" ]; then
@@ -51,19 +52,8 @@ if [ ! -d "${CALAMARES_CONFIG_DIR}" ]; then
     exit 1
 fi
 
-# Determine chroot command
-if command -v arch-chroot >/dev/null 2>&1; then
-    CHROOT_CMD="arch-chroot"
-    echo -e "${BLUE}Using arch-chroot${NC}"
-elif command -v systemd-nspawn >/dev/null 2>&1; then
-    CHROOT_CMD="systemd-nspawn"
-    echo -e "${YELLOW}Using systemd-nspawn (arch-chroot not found)${NC}"
-    echo -e "${YELLOW}Tip: Install arch-install-scripts for better compatibility${NC}"
-else
-    echo -e "${RED}Error: Need arch-chroot or systemd-nspawn!${NC}" >&2
-    echo -e "${YELLOW}Install: sudo dnf install arch-install-scripts${NC}"
-    exit 1
-fi
+# Determine chroot command (distro-aware error messages via build-utils.sh)
+detect_chroot_cmd
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}Step 5: Installing Calamares Installer${NC}"
@@ -397,22 +387,10 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 # Install fakeroot if not available (required for makepkg)
 if ! command -v fakeroot >/dev/null 2>&1; then
     echo -e "${BLUE}Installing fakeroot (required for makepkg)...${NC}"
-    if command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y fakeroot || {
-            echo -e "${YELLOW}Warning: Could not install fakeroot via dnf, trying pacman...${NC}"
-            # If we're on Arch, try pacman
-            sudo pacman -S --noconfirm fakeroot 2>/dev/null || {
-                echo -e "${RED}Error: Could not install fakeroot${NC}" >&2
-                exit 1
-            }
-        }
-    elif command -v pacman >/dev/null 2>&1; then
-        sudo pacman -S --noconfirm fakeroot || {
-            echo -e "${RED}Error: Could not install fakeroot${NC}" >&2
-            exit 1
-        }
-    else
-        echo -e "${RED}Error: Cannot install fakeroot - no package manager found${NC}" >&2
+    # install_host_package detects the running distro automatically
+    if ! install_host_package "fakeroot" "fakeroot" "fakeroot" "fakeroot"; then
+        echo -e "${RED}Error: Could not install fakeroot${NC}" >&2
+        echo -e "${YELLOW}Install manually: $(pkg_install_hint fakeroot)${NC}"
         exit 1
     fi
 fi
@@ -424,7 +402,7 @@ cd "${CALAMARES_CONFIG_DIR}"
 echo -e "${BLUE}Running makepkg (skipping dependency checks)...${NC}"
 makepkg -f --noconfirm --nodeps || {
     echo -e "${RED}Error: Failed to build calamares-config package${NC}" >&2
-    echo -e "${YELLOW}Make sure fakeroot is installed: sudo dnf install fakeroot${NC}"
+    echo -e "${YELLOW}Make sure fakeroot is installed: $(pkg_install_hint fakeroot)${NC}"
     exit 1
 }
 
