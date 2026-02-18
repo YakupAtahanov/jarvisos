@@ -711,6 +711,10 @@ if sudo test -f "${SQUASHFS_ROOTFS}/boot/intel-ucode.img"; then
     sudo cp "${SQUASHFS_ROOTFS}/boot/intel-ucode.img" "${KERNEL_BACKUP_DIR}/"
 fi
 
+# Fix permissions so step 7 can read these files without sudo
+sudo chmod 644 "${KERNEL_BACKUP_DIR}"/*.img "${KERNEL_BACKUP_DIR}"/vmlinuz-linux 2>/dev/null || true
+sudo chmod 755 "${KERNEL_BACKUP_DIR}"
+sudo chown -R "$(id -u):$(id -g)" "${KERNEL_BACKUP_DIR}"
 echo -e "${GREEN}✓ Kernel files backed up to ${KERNEL_BACKUP_DIR}${NC}"
 
 # Step 7: Ensure root user setup for autologin
