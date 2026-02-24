@@ -212,7 +212,27 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
 
 # Graphics drivers
 echo -e "${BLUE}Installing graphics drivers...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm mesa vulkan-intel vulkan-radeon libva-mesa-driver
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    mesa \
+    vulkan-intel \
+    vulkan-radeon \
+    libva-mesa-driver \
+    vulkan-swrast \
+    libvdpau
+
+# VA-API drivers (hardware video decode for Intel and AMD)
+echo -e "${BLUE}Installing VA-API drivers (hardware video decode)...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    intel-media-driver \
+    libva-intel-driver \
+    libva-utils
+
+# Xorg video drivers (fallback for X11 sessions and display quirks)
+echo -e "${BLUE}Installing Xorg video drivers...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    xf86-video-amdgpu \
+    xf86-video-intel \
+    xf86-video-nouveau
 
 # ============================================================================
 # Linux firmware (CRITICAL for hardware support - WiFi, audio, touchpad, etc)
@@ -717,8 +737,8 @@ sudo chmod 755 "${KERNEL_BACKUP_DIR}"
 sudo chown -R "$(id -u):$(id -g)" "${KERNEL_BACKUP_DIR}"
 echo -e "${GREEN}✓ Kernel files backed up to ${KERNEL_BACKUP_DIR}${NC}"
 
-# Step 7: Ensure root user setup for autologin
-echo -e "${BLUE}Setting up root user for autologin...${NC}"
+# Step 7: Ensure root user setup and create liveuser account
+echo -e "${BLUE}Setting up root user and creating liveuser account...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     # Ensure root has a home directory
     if [ ! -d /root ]; then
@@ -757,6 +777,58 @@ HOSTSEOF
     fi
 " 2>&1 | grep -vE "WARNING.*mountpoint" || true
 
+# ============================================================================
+# Create liveuser account (standard live ISO practice)
+# Running as non-root user fixes PipeWire audio and is more secure
+# ============================================================================
+echo -e "${BLUE}Creating liveuser account with passwordless sudo...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    # Create liveuser with home directory and add to all relevant groups
+    useradd -m -G wheel,audio,video,storage,optical,network,power,lp,sys,scanner \
+        -s /bin/bash liveuser 2>/dev/null || true
+
+    # Remove password for live boot (passwordless login)
+    passwd -d liveuser
+
+    # Copy skeleton files to home
+    cp -r /etc/skel/. /home/liveuser/ 2>/dev/null || true
+    chown -R liveuser:liveuser /home/liveuser
+
+    # ---- Sudoers: passwordless sudo for wheel group and liveuser ----
+    # Uncomment wheel NOPASSWD line if present
+    sed -i 's/^# %wheel ALL=(ALL:ALL) NOPASSWD: ALL/%wheel ALL=(ALL:ALL) NOPASSWD: ALL/' /etc/sudoers
+    sed -i 's/^# %wheel ALL=(ALL) NOPASSWD: ALL/%wheel ALL=(ALL) NOPASSWD: ALL/' /etc/sudoers
+
+    # Add explicit liveuser NOPASSWD entry (belt-and-suspenders)
+    if ! grep -q '^liveuser' /etc/sudoers; then
+        echo 'liveuser ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+    fi
+"
+echo -e "${GREEN}✓ liveuser account created with passwordless sudo${NC}"
+
+# ---- Polkit rules: let liveuser manage NetworkManager and audio ----
+echo -e "${BLUE}Creating polkit rules for liveuser (NetworkManager, audio)...${NC}"
+sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/polkit-1/rules.d"
+sudo tee "${SQUASHFS_ROOTFS}/etc/polkit-1/rules.d/50-liveuser.rules" > /dev/null << 'POLKITEOF'
+// JARVIS OS live user policy - allow liveuser to manage networking and audio
+// without password prompts during the live session
+
+polkit.addRule(function(action, subject) {
+    // Allow liveuser to manage all NetworkManager connections
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0 &&
+        subject.user === "liveuser") {
+        return polkit.Result.YES;
+    }
+
+    // Allow liveuser to use all system actions without password
+    if (subject.user === "liveuser" &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
+POLKITEOF
+echo -e "${GREEN}✓ Polkit rules created for liveuser${NC}"
+
 # Step 8: Enable services
 echo -e "${BLUE}Enabling services...${NC}"
 
@@ -785,23 +857,30 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable ModemManager.service
 
 echo -e "${GREEN}✓ Services enabled${NC}"
 
-# Step 8.5: Enable PipeWire audio services for root user (autologin)
-echo -e "${BLUE}Enabling PipeWire audio services for root user...${NC}"
+# Step 8.5: Enable PipeWire audio services globally and for liveuser
+echo -e "${BLUE}Enabling PipeWire audio services for liveuser...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
-    # Enable PipeWire services globally
+    # Enable PipeWire services globally for all users
     systemctl --user --global enable pipewire.service
     systemctl --user --global enable pipewire-pulse.service
     systemctl --user --global enable wireplumber.service
-    
-    # Create root user systemd directory
+
+    # Create liveuser systemd user directory and symlinks
+    mkdir -p /home/liveuser/.config/systemd/user/default.target.wants
+    ln -sf /usr/lib/systemd/user/pipewire.service \
+        /home/liveuser/.config/systemd/user/default.target.wants/ 2>/dev/null || true
+    ln -sf /usr/lib/systemd/user/pipewire-pulse.service \
+        /home/liveuser/.config/systemd/user/default.target.wants/ 2>/dev/null || true
+    ln -sf /usr/lib/systemd/user/wireplumber.service \
+        /home/liveuser/.config/systemd/user/default.target.wants/ 2>/dev/null || true
+    chown -R liveuser:liveuser /home/liveuser/.config
+
+    # Also do root (belt and suspenders)
     mkdir -p /root/.config/systemd/user/default.target.wants
-    
-    # Create symlinks for root user (autologin)
     ln -sf /usr/lib/systemd/user/pipewire.service /root/.config/systemd/user/default.target.wants/ 2>/dev/null || true
     ln -sf /usr/lib/systemd/user/pipewire-pulse.service /root/.config/systemd/user/default.target.wants/ 2>/dev/null || true
     ln -sf /usr/lib/systemd/user/wireplumber.service /root/.config/systemd/user/default.target.wants/ 2>/dev/null || true
 "
-
 echo -e "${GREEN}✓ PipeWire audio services enabled${NC}"
 
 # Step 8.6: Create PipeWire autostart script for live ISO
@@ -810,18 +889,8 @@ sudo tee "${SQUASHFS_ROOTFS}/etc/profile.d/pipewire-start.sh" > /dev/null << 'EO
 #!/bin/bash
 # PipeWire autostart script for live ISO
 # Starts PipeWire services when user session begins
-
-# Only run in interactive shell with user session
 if [ -n "$PS1" ] && [ -n "$XDG_RUNTIME_DIR" ]; then
-    # Only run if PipeWire is not already running
     if ! systemctl --user is-active --quiet pipewire.service 2>/dev/null; then
-        # Ensure systemd user instance is running
-        if ! systemctl --user is-system-running >/dev/null 2>&1; then
-            # Start systemd user instance
-            systemctl --user start default.target 2>/dev/null || true
-        fi
-
-        # Start PipeWire services with delay to ensure system is ready
         (
             sleep 2
             systemctl --user start pipewire.service 2>/dev/null || true
@@ -831,12 +900,11 @@ if [ -n "$PS1" ] && [ -n "$XDG_RUNTIME_DIR" ]; then
     fi
 fi
 EOF
-
 sudo chmod +x "${SQUASHFS_ROOTFS}/etc/profile.d/pipewire-start.sh"
 
-# Also create KDE Plasma environment script for Wayland session
-sudo mkdir -p "${SQUASHFS_ROOTFS}/root/.config/plasma-workspace/env"
-sudo tee "${SQUASHFS_ROOTFS}/root/.config/plasma-workspace/env/pipewire.sh" > /dev/null << 'EOF'
+# KDE Plasma environment script for liveuser Wayland session
+sudo mkdir -p "${SQUASHFS_ROOTFS}/home/liveuser/.config/plasma-workspace/env"
+sudo tee "${SQUASHFS_ROOTFS}/home/liveuser/.config/plasma-workspace/env/pipewire.sh" > /dev/null << 'EOF'
 #!/bin/bash
 # Start PipeWire services for KDE Plasma session
 if command -v systemctl >/dev/null 2>&1; then
@@ -845,9 +913,8 @@ if command -v systemctl >/dev/null 2>&1; then
     systemctl --user start pipewire-pulse.service 2>/dev/null || true
 fi
 EOF
-
-sudo chmod +x "${SQUASHFS_ROOTFS}/root/.config/plasma-workspace/env/pipewire.sh"
-sudo chown -R root:root "${SQUASHFS_ROOTFS}/root/.config/plasma-workspace/env/pipewire.sh" 2>/dev/null || true
+sudo chmod +x "${SQUASHFS_ROOTFS}/home/liveuser/.config/plasma-workspace/env/pipewire.sh"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" chown -R liveuser:liveuser /home/liveuser/.config
 
 echo -e "${GREEN}✓ PipeWire autostart scripts created${NC}"
 
@@ -884,10 +951,11 @@ echo -e "${BLUE}Configuring SDDM autologin for live boot...${NC}"
 # Create SDDM configuration directory
 sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/sddm.conf.d"
 
-# Configure autologin as root for live boot
+# Configure autologin as liveuser for live boot
+# Using a non-root user fixes PipeWire audio and follows standard live ISO practice
 sudo tee "${SQUASHFS_ROOTFS}/etc/sddm.conf.d/autologin.conf" > /dev/null << 'EOF'
 [Autologin]
-User=root
+User=liveuser
 Session=plasma
 
 [General]
@@ -904,7 +972,7 @@ SessionCommand=/usr/share/sddm/scripts/Xsession
 SessionDir=/usr/share/xsessions
 EOF
 
-echo -e "${GREEN}✓ SDDM autologin configured for root user with Wayland session${NC}"
+echo -e "${GREEN}✓ SDDM autologin configured for liveuser with Wayland session${NC}"
 
 # Step 10: Cleanup inside chroot
 echo -e "${BLUE}Cleaning up package cache and temporary files...${NC}"
