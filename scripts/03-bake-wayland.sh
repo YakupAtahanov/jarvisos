@@ -232,7 +232,8 @@ echo -e "${BLUE}Installing Xorg video drivers...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
     xf86-video-amdgpu \
     xf86-video-intel \
-    xf86-video-nouveau
+    xf86-video-nouveau \
+    xf86-video-vmware
 
 # ============================================================================
 # Linux firmware (CRITICAL for hardware support - WiFi, audio, touchpad, etc)
@@ -378,6 +379,21 @@ echo -e "${BLUE}Installing input debugging tools...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm evtest libevdev
 
 echo -e "${GREEN}✓ Input drivers installed${NC}"
+
+# ============================================================================
+# Wayland portal support, XDG utilities, Qt Wayland backends
+# ============================================================================
+# xdg-desktop-portal-kde: Needed for file pickers, screenshots, screen sharing
+# qt5-wayland / qt6-wayland: Qt apps must use these to render natively on Wayland
+# xdg-user-dirs: Creates Desktop, Downloads, Documents, etc. for liveuser
+echo -e "${BLUE}Installing Wayland portal support and XDG utilities...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    xdg-user-dirs \
+    xdg-desktop-portal \
+    xdg-desktop-portal-kde \
+    qt5-wayland \
+    qt6-wayland
+echo -e "${GREEN}✓ Wayland portal support installed${NC}"
 
 # ============================================================================
 # Kernel module configuration for hardware support
@@ -783,9 +799,23 @@ HOSTSEOF
 # ============================================================================
 echo -e "${BLUE}Creating liveuser account with passwordless sudo...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
-    # Create liveuser with home directory and add to all relevant groups
+    # Ensure all required groups exist before creating liveuser.
+    # Groups like 'storage', 'optical', 'network', 'power', 'scanner' are NOT part
+    # of base Arch and may or may not be created by installed packages.
+    # useradd fails entirely if any listed group doesn't exist.
+    for grp in wheel audio video storage optical network power lp sys scanner; do
+        getent group \"\$grp\" >/dev/null 2>&1 || groupadd --system \"\$grp\" 2>/dev/null || true
+    done
+
+    # Create liveuser with all groups. Fall back to minimal groups if it still fails.
     useradd -m -G wheel,audio,video,storage,optical,network,power,lp,sys,scanner \
-        -s /bin/bash liveuser 2>/dev/null || true
+        -s /bin/bash liveuser 2>/dev/null || \
+    useradd -m -G wheel,audio,video -s /bin/bash liveuser 2>/dev/null || true
+
+    # Belt-and-suspenders: add to each group individually in case useradd missed some
+    for grp in wheel audio video storage optical network power lp sys scanner; do
+        usermod -aG \"\$grp\" liveuser 2>/dev/null || true
+    done
 
     # Remove password for live boot (passwordless login)
     passwd -d liveuser
@@ -803,6 +833,9 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     if ! grep -q '^liveuser' /etc/sudoers; then
         echo 'liveuser ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
     fi
+
+    # Restore correct sudoers permissions (sed can leave them wrong)
+    chmod 440 /etc/sudoers
 "
 echo -e "${GREEN}✓ liveuser account created with passwordless sudo${NC}"
 
@@ -855,31 +888,43 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable wpa_supplicant.service
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable bluetooth.service
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable ModemManager.service
 
+# RealtimeKit: CRITICAL for PipeWire audio real-time scheduling.
+# Without rtkit, PipeWire cannot acquire RT priority → audio dropouts or failure.
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable rtkit-daemon.service
+
 echo -e "${GREEN}✓ Services enabled${NC}"
 
 # Step 8.5: Enable PipeWire audio services globally and for liveuser
 echo -e "${BLUE}Enabling PipeWire audio services for liveuser...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
-    # Enable PipeWire services globally for all users
-    systemctl --user --global enable pipewire.service
-    systemctl --user --global enable pipewire-pulse.service
-    systemctl --user --global enable wireplumber.service
+    # Attempt global user-service enable via systemctl (may fail in chroot - that's OK)
+    # systemctl --global creates symlinks in /etc/systemd/user/default.target.wants/
+    # which applies to ALL users' sessions.
+    systemctl --user --global enable pipewire.service 2>/dev/null || true
+    systemctl --user --global enable pipewire-pulse.service 2>/dev/null || true
+    systemctl --user --global enable wireplumber.service 2>/dev/null || true
 
-    # Create liveuser systemd user directory and symlinks
+    # Belt-and-suspenders: create the symlinks manually in case systemctl failed.
+    # /etc/systemd/user/ = global (all users); /home/liveuser/.config/... = liveuser-specific
+    mkdir -p /etc/systemd/user/default.target.wants
+    for svc in pipewire.service pipewire-pulse.service wireplumber.service; do
+        ln -sf /usr/lib/systemd/user/\$svc /etc/systemd/user/default.target.wants/\$svc 2>/dev/null || true
+    done
+
+    # Create liveuser-specific symlinks (user-local override, takes priority)
     mkdir -p /home/liveuser/.config/systemd/user/default.target.wants
-    ln -sf /usr/lib/systemd/user/pipewire.service \
-        /home/liveuser/.config/systemd/user/default.target.wants/ 2>/dev/null || true
-    ln -sf /usr/lib/systemd/user/pipewire-pulse.service \
-        /home/liveuser/.config/systemd/user/default.target.wants/ 2>/dev/null || true
-    ln -sf /usr/lib/systemd/user/wireplumber.service \
-        /home/liveuser/.config/systemd/user/default.target.wants/ 2>/dev/null || true
+    for svc in pipewire.service pipewire-pulse.service wireplumber.service; do
+        ln -sf /usr/lib/systemd/user/\$svc \
+            /home/liveuser/.config/systemd/user/default.target.wants/\$svc 2>/dev/null || true
+    done
     chown -R liveuser:liveuser /home/liveuser/.config
 
     # Also do root (belt and suspenders)
     mkdir -p /root/.config/systemd/user/default.target.wants
-    ln -sf /usr/lib/systemd/user/pipewire.service /root/.config/systemd/user/default.target.wants/ 2>/dev/null || true
-    ln -sf /usr/lib/systemd/user/pipewire-pulse.service /root/.config/systemd/user/default.target.wants/ 2>/dev/null || true
-    ln -sf /usr/lib/systemd/user/wireplumber.service /root/.config/systemd/user/default.target.wants/ 2>/dev/null || true
+    for svc in pipewire.service pipewire-pulse.service wireplumber.service; do
+        ln -sf /usr/lib/systemd/user/\$svc \
+            /root/.config/systemd/user/default.target.wants/\$svc 2>/dev/null || true
+    done
 "
 echo -e "${GREEN}✓ PipeWire audio services enabled${NC}"
 
@@ -932,6 +977,8 @@ EOF
 sudo tee "${SQUASHFS_ROOTFS}/etc/NetworkManager/conf.d/wifi.conf" > /dev/null << 'EOF'
 [main]
 plugins=keyfile
+# Hand DNS management to systemd-resolved (reads /run/systemd/resolve/stub-resolv.conf)
+dns=systemd-resolved
 
 [keyfile]
 unmanaged-devices=none
@@ -973,6 +1020,53 @@ SessionDir=/usr/share/xsessions
 EOF
 
 echo -e "${GREEN}✓ SDDM autologin configured for liveuser with Wayland session${NC}"
+
+# ============================================================================
+# Set up liveuser XDG directories and desktop shortcuts
+# ============================================================================
+echo -e "${BLUE}Setting up liveuser XDG user directories...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    # Create standard XDG directories
+    mkdir -p /home/liveuser/{Desktop,Downloads,Documents,Pictures,Music,Videos,Templates,Public}
+
+    # Write xdg-user-dirs config so KDE and apps know the paths
+    mkdir -p /home/liveuser/.config
+    cat > /home/liveuser/.config/user-dirs.dirs << 'XDGEOF'
+XDG_DESKTOP_DIR=\"\$HOME/Desktop\"
+XDG_DOWNLOAD_DIR=\"\$HOME/Downloads\"
+XDG_TEMPLATES_DIR=\"\$HOME/Templates\"
+XDG_PUBLICSHARE_DIR=\"\$HOME/Public\"
+XDG_DOCUMENTS_DIR=\"\$HOME/Documents\"
+XDG_MUSIC_DIR=\"\$HOME/Music\"
+XDG_PICTURES_DIR=\"\$HOME/Pictures\"
+XDG_VIDEOS_DIR=\"\$HOME/Videos\"
+XDGEOF
+    echo 'enabled=True' > /home/liveuser/.config/user-dirs.locale
+
+    # Ensure correct ownership of the entire home directory
+    chown -R liveuser:liveuser /home/liveuser
+"
+echo -e "${GREEN}✓ XDG directories created for liveuser${NC}"
+
+# Create Calamares installer shortcut on liveuser's Desktop
+echo -e "${BLUE}Creating installer desktop shortcut for liveuser...${NC}"
+sudo tee "${SQUASHFS_ROOTFS}/home/liveuser/Desktop/install-jarvisos.desktop" > /dev/null << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Install JARVIS OS
+Comment=Install JARVIS OS to your hard drive
+Exec=sudo -E calamares
+Icon=calamares
+Terminal=false
+StartupNotify=true
+Categories=System;
+X-KDE-StartupNotify=true
+EOF
+sudo chmod +x "${SQUASHFS_ROOTFS}/home/liveuser/Desktop/install-jarvisos.desktop"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" chown liveuser:liveuser \
+    /home/liveuser/Desktop/install-jarvisos.desktop
+echo -e "${GREEN}✓ Installer shortcut created on liveuser Desktop${NC}"
 
 # Step 10: Cleanup inside chroot
 echo -e "${BLUE}Cleaning up package cache and temporary files...${NC}"

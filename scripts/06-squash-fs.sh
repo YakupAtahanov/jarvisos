@@ -109,8 +109,14 @@ sudo mkdir -p "${SQUASHFS_ROOTFS}/proc" "${SQUASHFS_ROOTFS}/sys" "${SQUASHFS_ROO
     "${SQUASHFS_ROOTFS}/var/lib/pacman/sync" \
     "${SQUASHFS_ROOTFS}/var/tmp" 2>/dev/null || true
 
-# Remove DNS resolution file copy (not needed in SquashFS)
+# Remove build-time DNS resolution file (copied from host for package installation)
 sudo rm -f "${SQUASHFS_ROOTFS}/etc/resolv.conf" 2>/dev/null || true
+
+# Create proper live-boot DNS symlink pointing to systemd-resolved's stub resolver.
+# systemd-resolved creates /run/systemd/resolve/stub-resolv.conf at runtime.
+# NetworkManager (with dns=systemd-resolved) will push DNS servers into resolved.
+sudo ln -sf /run/systemd/resolve/stub-resolv.conf "${SQUASHFS_ROOTFS}/etc/resolv.conf"
+echo -e "${BLUE}Set /etc/resolv.conf → systemd-resolved stub (live-boot DNS)${NC}"
 
 # Create backup of original SquashFS
 SQUASHFS_BACKUP="${SQUASHFS_FILE}.backup"
