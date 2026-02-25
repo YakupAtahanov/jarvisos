@@ -4,8 +4,9 @@
 
 set -e
 
-# Source config file
+# Source config file and shared utilities
 source build.config
+source "$(dirname "${BASH_SOURCE[0]}")/build-utils.sh"
 
 # Validate required variables
 if [ -z "${SCRIPTS_DIR}" ]; then
@@ -43,19 +44,8 @@ if [ ! -d "${SQUASHFS_ROOTFS}/usr/bin" ] && [ ! -d "${SQUASHFS_ROOTFS}/bin" ]; t
     exit 1
 fi
 
-# Determine chroot command
-if command -v arch-chroot >/dev/null 2>&1; then
-    CHROOT_CMD="arch-chroot"
-    echo -e "${BLUE}Using arch-chroot${NC}"
-elif command -v systemd-nspawn >/dev/null 2>&1; then
-    CHROOT_CMD="systemd-nspawn"
-    echo -e "${YELLOW}Using systemd-nspawn (arch-chroot not found)${NC}"
-    echo -e "${YELLOW}Tip: Install arch-install-scripts for better compatibility${NC}"
-else
-    echo -e "${RED}Error: Need arch-chroot or systemd-nspawn!${NC}" >&2
-    echo -e "${YELLOW}Install: sudo dnf install arch-install-scripts${NC}"
-    exit 1
-fi
+# Determine chroot command (distro-aware error messages via build-utils.sh)
+detect_chroot_cmd
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}Step 3: Installing KDE Plasma Wayland${NC}"
@@ -64,8 +54,15 @@ echo -e "${BLUE}Rootfs: ${SQUASHFS_ROOTFS}${NC}"
 
 # Step 1: Copy DNS resolution file
 echo -e "${BLUE}Copying DNS resolution file...${NC}"
-if [ -f /etc/resolv.conf ]; then
-    sudo cp ${BUILD_DEPS_DIR}/resolv.conf "${SQUASHFS_ROOTFS}/etc/resolv.conf" 2>/dev/null || true
+# Prefer build-deps/resolv.conf (with known-good DNS), fallback to host resolv.conf
+if [ -f "${BUILD_DEPS_DIR}/resolv.conf" ]; then
+    sudo cp "${BUILD_DEPS_DIR}/resolv.conf" "${SQUASHFS_ROOTFS}/etc/resolv.conf" 2>/dev/null || true
+elif [ -f /etc/resolv.conf ]; then
+    sudo cp /etc/resolv.conf "${SQUASHFS_ROOTFS}/etc/resolv.conf" 2>/dev/null || true
+fi
+# Ensure resolv.conf has fallback DNS if empty or missing
+if [ ! -s "${SQUASHFS_ROOTFS}/etc/resolv.conf" ]; then
+    printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' | sudo tee "${SQUASHFS_ROOTFS}/etc/resolv.conf" > /dev/null
 fi
 
 # Step 2: Bind mount iso-rootfs to itself
@@ -166,6 +163,24 @@ if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Syu --noconfirm 2>&1; then
     sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Syu --noconfirm 2>&1
 fi
 
+# ============================================================================
+# CRITICAL: Install Linux kernel package
+# ============================================================================
+echo -e "${BLUE}Installing Linux kernel...${NC}"
+if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm linux linux-headers 2>&1; then
+    echo -e "${RED}FATAL: Failed to install linux kernel package${NC}" >&2
+    exit 1
+fi
+
+# Verify kernel package was installed
+if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Q linux >/dev/null 2>&1; then
+    echo -e "${RED}FATAL: Linux kernel package not found after installation${NC}" >&2
+    exit 1
+fi
+
+KERNEL_VERSION=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Q linux | awk '{print $2}')
+echo -e "${GREEN}✓ Linux kernel installed: ${KERNEL_VERSION}${NC}"
+
 # Step 6: Install GUI packages in groups
 echo -e "${BLUE}Installing GUI packages...${NC}"
 
@@ -175,19 +190,75 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm wayland wayland-prot
 
 # KDE Plasma Desktop Environment
 echo -e "${BLUE}Installing KDE Plasma Desktop Environment...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-meta kde-applications-meta sddm
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-meta sddm
+
+# Essential KDE applications (kde-applications-meta was removed from Arch repos)
+echo -e "${BLUE}Installing essential KDE applications...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    ark \
+    dolphin \
+    gwenview \
+    kate \
+    konsole \
+    okular \
+    spectacle \
+    elisa \
+    kcalc \
+    plasma-systemmonitor \
+    kwrite \
+    filelight \
+    partitionmanager \
+    kdeconnect
 
 # Graphics drivers
 echo -e "${BLUE}Installing graphics drivers...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm mesa vulkan-intel vulkan-radeon libva-mesa-driver
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    mesa \
+    vulkan-intel \
+    vulkan-radeon \
+    libva-mesa-driver \
+    vulkan-swrast \
+    libvdpau
 
-# Linux firmware (critical for hardware support - audio, network, touchpad, touchscreen)
-echo -e "${BLUE}Installing Linux firmware...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm linux-firmware
+# VA-API drivers (hardware video decode for Intel and AMD)
+echo -e "${BLUE}Installing VA-API drivers (hardware video decode)...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    intel-media-driver \
+    libva-intel-driver \
+    libva-utils
 
-# Audio stack (PipeWire)
-echo -e "${BLUE}Installing audio stack...${NC}"
-echo -e "${BLUE}Installing audio stack (PipeWire)...${NC}"
+# Xorg video drivers (fallback for X11 sessions and display quirks)
+echo -e "${BLUE}Installing Xorg video drivers...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    xf86-video-amdgpu \
+    xf86-video-intel \
+    xf86-video-nouveau
+
+# ============================================================================
+# Linux firmware (CRITICAL for hardware support - WiFi, audio, touchpad, etc)
+# ============================================================================
+echo -e "${BLUE}Installing comprehensive Linux firmware...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    linux-firmware \
+    linux-firmware-marvell \
+    linux-firmware-bnx2x \
+    linux-firmware-liquidio \
+    linux-firmware-mellanox \
+    linux-firmware-nfp \
+    linux-firmware-qcom \
+    linux-firmware-qlogic \
+    linux-firmware-whence
+
+echo -e "${GREEN}✓ Linux firmware installed${NC}"
+
+# CPU microcode (Intel and AMD)
+echo -e "${BLUE}Installing CPU microcode...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm intel-ucode amd-ucode
+
+# ============================================================================
+# Audio stack (PipeWire) - CRITICAL for working audio
+# ============================================================================
+echo -e "${BLUE}Installing PipeWire audio stack...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     # Install pipewire-jack which will prompt to replace jack2
     # 'yes' command auto-answers the prompt
@@ -198,21 +269,55 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     }
 "
 
-# KDE Audio Applet
+# KDE Audio Applet and volume control
 echo -e "${BLUE}Installing KDE audio applet...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-pa
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-pa pavucontrol
 
 # ALSA utilities and firmware (required for audio hardware detection)
 echo -e "${BLUE}Installing ALSA utilities and firmware...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm alsa-utils alsa-firmware alsa-plugins
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    alsa-utils \
+    alsa-firmware \
+    alsa-plugins \
+    alsa-lib \
+    alsa-topology-conf \
+    alsa-ucm-conf
+
+# RealtimeKit and Sound Open Firmware (CRITICAL for PipeWire audio)
+echo -e "${BLUE}Installing RealtimeKit and SOF firmware for real-time audio...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    rtkit \
+    sof-firmware
+# Note: alsa-card-profiles is provided by pipewire-alsa, no need to install separately
+
+echo -e "${GREEN}✓ PipeWire audio stack installed${NC}"
 
 # Cursor themes
 echo -e "${BLUE}Installing cursor themes...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm xcursor-themes breeze breeze-icons adwaita-cursors
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm xcursor-themes breeze breeze-icons adwaita-icon-theme
 
-# Networking
-echo -e "${BLUE}Installing networking...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm networkmanager plasma-nm
+# ============================================================================
+# Networking and WiFi (CRITICAL for live boot connectivity)
+# ============================================================================
+echo -e "${BLUE}Installing networking stack...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    networkmanager \
+    plasma-nm \
+    network-manager-applet
+
+# WiFi authentication and tools (CRITICAL for password-protected networks)
+echo -e "${BLUE}Installing WiFi authentication and management tools...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    wpa_supplicant \
+    iw \
+    wireless_tools \
+    wireless-regdb \
+    dialog \
+    dhcpcd \
+    modemmanager
+# Note: crda was removed from Arch repos in 2021; wireless-regdb replaces it
+
+echo -e "${GREEN}✓ WiFi tools installed${NC}"
 
 # Bluetooth
 echo -e "${BLUE}Installing Bluetooth...${NC}"
@@ -226,28 +331,174 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm ttf-dejavu ttf-liber
 echo -e "${BLUE}Installing development tools...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm base-devel git python python-pip nodejs npm wget curl vim
 
-# Python packages
+# System utilities (standard in Arch ISO)
+echo -e "${BLUE}Installing system utilities...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    sudo \
+    less \
+    man-db \
+    man-pages \
+    dmidecode \
+    usbutils \
+    pciutils \
+    ethtool \
+    iproute2 \
+    bind-tools \
+    traceroute
+
+# Python packages (use --needed to skip already-installed packages)
 echo -e "${BLUE}Installing Python packages...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm python-numpy python-scipy python-requests python-cryptography python-yaml python-toml
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
+    python-numpy \
+    python-scipy \
+    python-requests \
+    python-cryptography \
+    python-yaml \
+    python-tomli \
+    python-setuptools \
+    python-pip
 
-# Essential applications
+# Essential applications (browser - kate/konsole/dolphin already installed with KDE apps)
 echo -e "${BLUE}Installing essential applications...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm firefox konsole dolphin kate
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm firefox vlc
 
-# Touchpad/Input drivers
-echo -e "${BLUE}Installing input drivers...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm libinput xf86-input-libinput
+# ============================================================================
+# Touchpad/Input drivers (CRITICAL for laptop touchpad functionality)
+# ============================================================================
+echo -e "${BLUE}Installing input drivers and utilities...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    libinput \
+    xf86-input-libinput \
+    xorg-xinput \
+    xf86-input-evdev \
+    xf86-input-synaptics
 
-# Ensure kernel modules for touchpad/touchscreen are available
-# linux-firmware (installed above) provides firmware for these modules
-# Modules (psmouse, i2c_hid, hid_multitouch) will load automatically via udev
-echo -e "${BLUE}Configuring input device kernel modules...${NC}"
+# Input device debugging tools (for troubleshooting touchpad issues)
+echo -e "${BLUE}Installing input debugging tools...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm evtest libevdev
+
+echo -e "${GREEN}✓ Input drivers installed${NC}"
+
+# ============================================================================
+# Wayland portal support, XDG utilities, Qt Wayland backends
+# ============================================================================
+# xdg-desktop-portal-kde: Needed for file pickers, screenshots, screen sharing
+# qt5-wayland / qt6-wayland: Qt apps must use these to render natively on Wayland
+# xdg-user-dirs: Creates Desktop, Downloads, Documents, etc. for liveuser
+echo -e "${BLUE}Installing Wayland portal support and XDG utilities...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+    xdg-user-dirs \
+    xdg-desktop-portal \
+    xdg-desktop-portal-kde \
+    qt5-wayland \
+    qt6-wayland
+echo -e "${GREEN}✓ Wayland portal support installed${NC}"
+
+# ============================================================================
+# Kernel module configuration for hardware support
+# ============================================================================
+echo -e "${BLUE}Configuring kernel modules for hardware support...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
-    # Create modprobe configuration to ensure modules are available
-    # Modules will load automatically when hardware is detected
-    echo 'options psmouse proto=auto' > /etc/modprobe.d/psmouse.conf 2>/dev/null || true
-    echo 'options i2c_hid delay_override=1' > /etc/modprobe.d/i2c_hid.conf 2>/dev/null || true
+    # Create modprobe configurations for input devices
+    mkdir -p /etc/modprobe.d
+
+    # Touchpad configuration
+    echo 'options psmouse proto=auto' > /etc/modprobe.d/psmouse.conf
+    echo 'options i2c_hid delay_override=1' > /etc/modprobe.d/i2c_hid.conf
+
+    # Audio configuration - enable power saving for HDA Intel
+    echo 'options snd_hda_intel power_save=1' > /etc/modprobe.d/audio.conf
+
+    # WiFi configuration - disable power management for iwlwifi (power saving causes connection drops)
+    echo 'options iwlwifi power_save=0' > /etc/modprobe.d/wifi.conf
+
+    # Bluetooth configuration
+    echo 'options btusb enable_autosuspend=0' > /etc/modprobe.d/bluetooth.conf
 " || true
+
+echo -e "${GREEN}✓ Kernel modules configured${NC}"
+
+# Create modules-load configuration to ensure critical modules load at boot
+echo -e "${BLUE}Configuring automatic module loading at boot...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    mkdir -p /etc/modules-load.d
+
+    # Load WiFi modules
+    cat > /etc/modules-load.d/wifi.conf << 'WIFIEOF'
+# WiFi kernel modules
+iwlwifi
+mt76_connac_lib
+rtw88_core
+brcmfmac
+WIFIEOF
+
+    # Load audio modules
+    cat > /etc/modules-load.d/audio.conf << 'AUDIOEOF'
+# Audio kernel modules
+snd_hda_intel
+snd_hda_codec_generic
+snd_hda_codec_realtek
+snd_hda_codec_hdmi
+snd_soc_core
+AUDIOEOF
+
+    # Load input device modules
+    cat > /etc/modules-load.d/input.conf << 'INPUTEOF'
+# Input device kernel modules
+i2c_hid
+i2c_hid_acpi
+hid_multitouch
+psmouse
+usbhid
+INPUTEOF
+
+    # Load bluetooth modules
+    cat > /etc/modules-load.d/bluetooth.conf << 'BTEOF'
+# Bluetooth kernel modules
+btusb
+btintel
+btrtl
+BTEOF
+" || true
+
+echo -e "${GREEN}✓ Automatic module loading configured${NC}"
+
+# Configure ALSA to work properly with PipeWire
+echo -e "${BLUE}Configuring ALSA for PipeWire compatibility...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    mkdir -p /etc/alsa/conf.d
+
+    # Create ALSA configuration for PipeWire
+    cat > /etc/alsa/conf.d/99-pipewire-default.conf << 'ALSAEOF'
+pcm.!default {
+    type pipewire
+}
+
+ctl.!default {
+    type pipewire
+}
+ALSAEOF
+
+    # Ensure user is in audio group (for root in live boot)
+    usermod -aG audio root 2>/dev/null || true
+" || true
+
+echo -e "${GREEN}✓ ALSA configured for PipeWire${NC}"
+
+# ============================================================================
+# CRITICAL: Install archiso package for live boot hooks
+# ============================================================================
+# The archiso package provides the 'archiso' and 'memdisk' mkinitcpio hooks
+# These hooks are REQUIRED for the initramfs to mount the squashfs rootfs
+# during live boot. Without archiso hook, the kernel cannot find root.
+echo -e "${BLUE}Installing archiso package (live boot hooks)...${NC}"
+if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm archiso 2>&1; then
+    echo -e "${RED}FATAL: Failed to install archiso package${NC}" >&2
+    echo -e "${YELLOW}The archiso package provides memdisk and archiso mkinitcpio hooks${NC}"
+    echo -e "${YELLOW}Without these hooks, the live ISO CANNOT BOOT${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ archiso package installed (provides memdisk and archiso hooks)${NC}"
 
 # ============================================================================
 # CRITICAL FIX: Create mkinitcpio.conf for maximum hardware compatibility
@@ -274,15 +525,21 @@ sudo tee "${SQUASHFS_ROOTFS}/etc/mkinitcpio.conf" > /dev/null << 'MKINITCPIO_EOF
 # MODULES - Explicitly list all critical hardware modules
 # ============================================================================
 MODULES=(
+    # ========================================================================
+    # LIVE BOOT CRITICAL - squashfs, overlay, loop MUST be in initramfs
+    # The archiso hook needs these to mount the live rootfs from the squashfs
+    # ========================================================================
+    squashfs overlay loop
+
     # Filesystem support
     ext4 vfat exfat ntfs3
-    
+
     # USB support (CRITICAL for live USB boot)
-    usb_storage uas
-    
+    usb_storage uas xhci_hcd xhci_pci ehci_hcd ehci_pci ohci_hcd
+
     # Storage controllers
-    ahci sd_mod nvme
-    
+    ahci sd_mod nvme nvme_core
+
     # ========================================================================
     # INPUT DEVICES (Touchpad, Touchscreen, Keyboard, Mouse)
     # ========================================================================
@@ -292,12 +549,12 @@ MODULES=(
     psmouse
     # I2C controller drivers (Intel, AMD, generic)
     i2c_i801 i2c_designware_platform i2c_designware_core
-    
+
     # ========================================================================
     # GRAPHICS DRIVERS (for display output)
     # ========================================================================
     i915 amdgpu radeon nouveau
-    
+
     # ========================================================================
     # AUDIO DRIVERS (Sound cards, speakers, microphones)
     # ========================================================================
@@ -308,38 +565,40 @@ MODULES=(
     snd_hda_codec_conexant snd_hda_codec_ca0132
     # SOF (Sound Open Firmware - modern Intel laptops)
     snd_soc_skl snd_soc_avs snd_soc_core
-    
+
     # ========================================================================
     # NETWORK DRIVERS
     # ========================================================================
     # Ethernet controllers
     e1000e r8169 igb ixgbe atlantic
-    
+
     # WiFi - Intel (most common)
     iwlwifi iwlmvm
-    
+
     # WiFi - MediaTek (MT7921, MT7922, etc)
     mt7921e mt76_connac_lib mt76
-    
+
     # WiFi - Realtek (RTW88 series)
     rtw88_8822ce rtw88_core rtw89_core rtw89_8852ae
-    
+
     # WiFi - Broadcom
     brcmfmac brcmutil
-    
+
     # WiFi - Atheros/Qualcomm
     ath10k_core ath10k_pci ath11k ath11k_pci
-    
+
     # ========================================================================
     # BLUETOOTH
     # ========================================================================
     btusb btintel btrtl btbcm
-    
+
     # ========================================================================
     # OTHER DEVICES
     # ========================================================================
     # Webcam
     uvcvideo
+    # DM for device mapper (used by some storage/crypto setups)
+    dm_mod
 )
 
 # ============================================================================
@@ -358,18 +617,26 @@ FILES=()
 # CRITICAL: 'autodetect' hook is REMOVED
 # autodetect only includes modules for the build machine's hardware
 # Without it, ALL modules in MODULES array are included
+#
+# CRITICAL: 'memdisk' and 'archiso' hooks REQUIRED for live boot
+# Without archiso hook, the kernel cannot find the root filesystem
+# The archiso hook: finds the live medium by label, mounts squashfs, sets up overlayfs
+# The memdisk hook: helper required by archiso for detecting the live medium
 HOOKS=(
     base          # Basic initramfs structure
-    udev          # Device manager
+    udev          # Device manager (needed to find live medium by label)
     modconf       # Load modules from /etc/modprobe.d/
     kms           # Kernel mode setting (graphics)
-    keyboard      # Keyboard support
+    memdisk       # REQUIRED: helper for archiso to detect live medium
+    archiso       # REQUIRED: mounts squashfs as rootfs with overlayfs for live boot
+    keyboard      # Keyboard support (for emergency shell)
     keymap        # Keyboard layout
-    consolefont   # Console font
     block         # Block device support
     filesystems   # Filesystem drivers
-    fsck          # Filesystem check
 )
+
+# Note: Firmware files from /usr/lib/firmware/ are automatically included
+# when corresponding kernel modules are added to the initramfs
 
 # ============================================================================
 # COMPRESSION - Use zstd for fast decompression during boot
@@ -387,23 +654,113 @@ echo -e "${BLUE}  - Added explicit MODULES array with all critical hardware${NC}
 echo -e "${BLUE}  - Initramfs will now work on ANY hardware${NC}"
 echo ""
 
+# ============================================================================
+# Pre-check: Verify kernel modules directory exists
+# ============================================================================
+echo -e "${BLUE}Verifying kernel installation...${NC}"
+# Arch Linux kernel modules are in directories like "6.18.7-arch1-1" (not ending in "-linux")
+# Find any directory that looks like a kernel version (contains numbers and dashes)
+KERNEL_MODULES_DIR=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c 'ls -1 /usr/lib/modules/ 2>/dev/null | grep -E "^[0-9]+\." | head -1')
+if [ -z "${KERNEL_MODULES_DIR}" ]; then
+    echo -e "${RED}FATAL: Kernel modules directory not found in /usr/lib/modules/${NC}" >&2
+    echo -e "${YELLOW}Available directories:${NC}"
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" ls -la /usr/lib/modules/ || true
+    exit 1
+fi
+echo -e "${GREEN}✓ Found kernel modules: ${KERNEL_MODULES_DIR}${NC}"
+
+# Ensure boot directory exists with correct permissions
+sudo arch-chroot "${SQUASHFS_ROOTFS}" mkdir -p /boot
+sudo arch-chroot "${SQUASHFS_ROOTFS}" chmod 755 /boot
+
 # Rebuild initramfs to include firmware and ALL kernel modules
 # This ensures firmware files (linux-firmware) are available during early boot
 # and ALL hardware modules are included (not just build machine's hardware)
 echo -e "${BLUE}Rebuilding initramfs with firmware support and all hardware modules...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" mkinitcpio -P || {
-    echo -e "${YELLOW}Warning: mkinitcpio had issues, but continuing...${NC}"
-}
+echo -e "${BLUE}This may take several minutes...${NC}"
 
-# Step 7: Ensure root user setup for autologin
-echo -e "${BLUE}Setting up root user for autologin...${NC}"
+# Run mkinitcpio with verbose output for debugging
+MKINITCPIO_OUTPUT=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" mkinitcpio -P 2>&1)
+MKINITCPIO_EXIT=$?
+
+if [ ${MKINITCPIO_EXIT} -ne 0 ]; then
+    echo -e "${RED}FATAL: mkinitcpio failed to generate initramfs${NC}" >&2
+    echo -e "${YELLOW}mkinitcpio output:${NC}"
+    echo "${MKINITCPIO_OUTPUT}"
+    echo ""
+    echo -e "${YELLOW}Checking for common issues:${NC}"
+    echo -e "${BLUE}Boot directory:${NC}"
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" ls -la /boot/ || true
+    echo -e "${BLUE}Kernel modules:${NC}"
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" ls -la /usr/lib/modules/ || true
+    exit 1
+fi
+
+# Show last 20 lines of output
+echo "${MKINITCPIO_OUTPUT}" | tail -20
+echo -e "${GREEN}✓ mkinitcpio completed successfully${NC}"
+
+# ============================================================================
+# CRITICAL: Verify kernel files were created
+# ============================================================================
+echo -e "${BLUE}Verifying kernel files were generated...${NC}"
+if ! sudo test -f "${SQUASHFS_ROOTFS}/boot/vmlinuz-linux"; then
+    echo -e "${RED}FATAL: vmlinuz-linux was not created!${NC}" >&2
+    echo -e "${YELLOW}Boot directory contents:${NC}"
+    sudo ls -lah "${SQUASHFS_ROOTFS}/boot/" || true
+    exit 1
+fi
+
+if ! sudo test -f "${SQUASHFS_ROOTFS}/boot/initramfs-linux.img"; then
+    echo -e "${RED}FATAL: initramfs-linux.img was not created!${NC}" >&2
+    echo -e "${YELLOW}Boot directory contents:${NC}"
+    sudo ls -lah "${SQUASHFS_ROOTFS}/boot/" || true
+    exit 1
+fi
+
+KERNEL_SIZE=$(sudo du -h "${SQUASHFS_ROOTFS}/boot/vmlinuz-linux" | cut -f1)
+INITRAMFS_SIZE=$(sudo du -h "${SQUASHFS_ROOTFS}/boot/initramfs-linux.img" | cut -f1)
+
+echo -e "${GREEN}✓ Kernel files verified:${NC}"
+echo -e "${GREEN}  - vmlinuz-linux (${KERNEL_SIZE})${NC}"
+echo -e "${GREEN}  - initramfs-linux.img (${INITRAMFS_SIZE})${NC}"
+
+# ============================================================================
+# CRITICAL: Copy kernel files outside rootfs for later use
+# ============================================================================
+# The kernel files will be needed by step 7 (rebuild-iso) to copy into the ISO
+# structure. We copy them out now to ensure they're accessible even if rootfs
+# is modified or cleaned up by subsequent steps.
+echo -e "${BLUE}Preserving kernel files for ISO build...${NC}"
+KERNEL_BACKUP_DIR="${BUILD_DIR}/kernel-files"
+sudo mkdir -p "${KERNEL_BACKUP_DIR}"
+sudo cp "${SQUASHFS_ROOTFS}/boot/vmlinuz-linux" "${KERNEL_BACKUP_DIR}/"
+sudo cp "${SQUASHFS_ROOTFS}/boot/initramfs-linux.img" "${KERNEL_BACKUP_DIR}/"
+if sudo test -f "${SQUASHFS_ROOTFS}/boot/initramfs-linux-fallback.img"; then
+    sudo cp "${SQUASHFS_ROOTFS}/boot/initramfs-linux-fallback.img" "${KERNEL_BACKUP_DIR}/"
+fi
+if sudo test -f "${SQUASHFS_ROOTFS}/boot/amd-ucode.img"; then
+    sudo cp "${SQUASHFS_ROOTFS}/boot/amd-ucode.img" "${KERNEL_BACKUP_DIR}/"
+fi
+if sudo test -f "${SQUASHFS_ROOTFS}/boot/intel-ucode.img"; then
+    sudo cp "${SQUASHFS_ROOTFS}/boot/intel-ucode.img" "${KERNEL_BACKUP_DIR}/"
+fi
+
+# Fix permissions so step 7 can read these files without sudo
+sudo chmod 644 "${KERNEL_BACKUP_DIR}"/*.img "${KERNEL_BACKUP_DIR}"/vmlinuz-linux 2>/dev/null || true
+sudo chmod 755 "${KERNEL_BACKUP_DIR}"
+sudo chown -R "$(id -u):$(id -g)" "${KERNEL_BACKUP_DIR}"
+echo -e "${GREEN}✓ Kernel files backed up to ${KERNEL_BACKUP_DIR}${NC}"
+
+# Step 7: Ensure root user setup and create liveuser account
+echo -e "${BLUE}Setting up root user and creating liveuser account...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     # Ensure root has a home directory
     if [ ! -d /root ]; then
         mkdir -p /root
         chmod 700 /root
     fi
-    
+
     # Create basic shell config files if they don't exist
     if [ ! -f /root/.bashrc ]; then
         cp /etc/skel/.bashrc /root/.bashrc 2>/dev/null || true
@@ -411,12 +768,98 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     if [ ! -f /root/.bash_profile ]; then
         cp /etc/skel/.bash_profile /root/.bash_profile 2>/dev/null || true
     fi
-    
+
+    # Remove root password for live boot (standard for Arch live ISO)
+    passwd -d root 2>/dev/null || true
+
+    # Generate default locale
+    sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+    sed -i 's/^#en_US ISO-8859-1/en_US ISO-8859-1/' /etc/locale.gen 2>/dev/null || true
+    locale-gen 2>/dev/null || true
+    echo 'LANG=en_US.UTF-8' > /etc/locale.conf
+
+    # Set hostname
+    echo 'jarvisos' > /etc/hostname
+    cat > /etc/hosts << 'HOSTSEOF'
+127.0.0.1   localhost
+::1         localhost
+127.0.1.1   jarvisos.localdomain jarvisos
+HOSTSEOF
+
     # Ensure root can login (check passwd entry)
     if ! getent passwd root >/dev/null 2>&1; then
         echo 'Warning: root user not found in passwd'
     fi
 " 2>&1 | grep -vE "WARNING.*mountpoint" || true
+
+# ============================================================================
+# Create liveuser account (standard live ISO practice)
+# Running as non-root user fixes PipeWire audio and is more secure
+# ============================================================================
+echo -e "${BLUE}Creating liveuser account with passwordless sudo...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    # Ensure all required groups exist before creating liveuser.
+    # Groups like 'storage', 'optical', 'network', 'power', 'scanner' are NOT part
+    # of base Arch and may or may not be created by installed packages.
+    # useradd fails entirely if any listed group doesn't exist.
+    for grp in wheel audio video storage optical network power lp sys scanner; do
+        getent group \"\$grp\" >/dev/null 2>&1 || groupadd --system \"\$grp\" 2>/dev/null || true
+    done
+
+    # Create liveuser with all groups. Fall back to minimal groups if it still fails.
+    useradd -m -G wheel,audio,video,storage,optical,network,power,lp,sys,scanner \
+        -s /bin/bash liveuser 2>/dev/null || \
+    useradd -m -G wheel,audio,video -s /bin/bash liveuser 2>/dev/null || true
+
+    # Belt-and-suspenders: add to each group individually in case useradd missed some
+    for grp in wheel audio video storage optical network power lp sys scanner; do
+        usermod -aG \"\$grp\" liveuser 2>/dev/null || true
+    done
+
+    # Remove password for live boot (passwordless login)
+    passwd -d liveuser
+
+    # Copy skeleton files to home
+    cp -r /etc/skel/. /home/liveuser/ 2>/dev/null || true
+    chown -R liveuser:liveuser /home/liveuser
+
+    # ---- Sudoers: passwordless sudo for wheel group and liveuser ----
+    # Uncomment wheel NOPASSWD line if present
+    sed -i 's/^# %wheel ALL=(ALL:ALL) NOPASSWD: ALL/%wheel ALL=(ALL:ALL) NOPASSWD: ALL/' /etc/sudoers
+    sed -i 's/^# %wheel ALL=(ALL) NOPASSWD: ALL/%wheel ALL=(ALL) NOPASSWD: ALL/' /etc/sudoers
+
+    # Add explicit liveuser NOPASSWD entry (belt-and-suspenders)
+    if ! grep -q '^liveuser' /etc/sudoers; then
+        echo 'liveuser ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+    fi
+
+    # Restore correct sudoers permissions (sed can leave them wrong)
+    chmod 440 /etc/sudoers
+"
+echo -e "${GREEN}✓ liveuser account created with passwordless sudo${NC}"
+
+# ---- Polkit rules: let liveuser manage NetworkManager and audio ----
+echo -e "${BLUE}Creating polkit rules for liveuser (NetworkManager, audio)...${NC}"
+sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/polkit-1/rules.d"
+sudo tee "${SQUASHFS_ROOTFS}/etc/polkit-1/rules.d/50-liveuser.rules" > /dev/null << 'POLKITEOF'
+// JARVIS OS live user policy - allow liveuser to manage networking and audio
+// without password prompts during the live session
+
+polkit.addRule(function(action, subject) {
+    // Allow liveuser to manage all NetworkManager connections
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0 &&
+        subject.user === "liveuser") {
+        return polkit.Result.YES;
+    }
+
+    // Allow liveuser to use all system actions without password
+    if (subject.user === "liveuser" &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
+POLKITEOF
+echo -e "${GREEN}✓ Polkit rules created for liveuser${NC}"
 
 # Step 8: Enable services
 echo -e "${BLUE}Enabling services...${NC}"
@@ -425,37 +868,63 @@ echo -e "${BLUE}Enabling services...${NC}"
 echo -e "${BLUE}Disabling conflicting network services...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable systemd-networkd.service 2>/dev/null || true
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable dhcpcd.service 2>/dev/null || true
-# Disable iwd.service - conflicts with NetworkManager (both try to manage wireless)
-# NetworkManager can use IWD as backend, but standalone iwd.service must be disabled
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable iwd.service 2>/dev/null || true
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl mask iwd.service 2>/dev/null || true
+# Note: iwd is not installed, so no need to disable it
+# NetworkManager will use wpa_supplicant as the WiFi backend
 
 # Enable systemd-resolved (required for NetworkManager DNS resolution)
 echo -e "${BLUE}Enabling systemd-resolved...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable systemd-resolved.service
 
-# Enable NetworkManager and other services
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable sddm
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable bluetooth
+# Enable NetworkManager and other critical services
+echo -e "${BLUE}Enabling NetworkManager and other services...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable sddm.service
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager.service
+# IMPORTANT: Disable NetworkManager-wait-online to prevent 90-second boot timeout
+# when no network is immediately available (common on live boot)
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable NetworkManager-wait-online.service 2>/dev/null || true
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable NetworkManager-dispatcher.service
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable wpa_supplicant.service
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable bluetooth.service
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable ModemManager.service
 
-# Step 8.5: Enable PipeWire audio services for root user (autologin)
-echo -e "${BLUE}Enabling PipeWire audio services for root user...${NC}"
+# RealtimeKit: CRITICAL for PipeWire audio real-time scheduling.
+# Without rtkit, PipeWire cannot acquire RT priority → audio dropouts or failure.
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable rtkit-daemon.service
+
+echo -e "${GREEN}✓ Services enabled${NC}"
+
+# Step 8.5: Enable PipeWire audio services globally and for liveuser
+echo -e "${BLUE}Enabling PipeWire audio services for liveuser...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
-    # Enable PipeWire services globally
-    systemctl --user --global enable pipewire.service
-    systemctl --user --global enable pipewire-pulse.service
-    systemctl --user --global enable wireplumber.service
-    
-    # Create root user systemd directory
-    mkdir -p /root/.config/systemd/user/default.target.wants
-    
-    # Create symlinks for root user (autologin)
-    ln -sf /usr/lib/systemd/user/pipewire.service /root/.config/systemd/user/default.target.wants/ 2>/dev/null || true
-    ln -sf /usr/lib/systemd/user/pipewire-pulse.service /root/.config/systemd/user/default.target.wants/ 2>/dev/null || true
-    ln -sf /usr/lib/systemd/user/wireplumber.service /root/.config/systemd/user/default.target.wants/ 2>/dev/null || true
-"
+    # Attempt global user-service enable via systemctl (may fail in chroot - that's OK)
+    # systemctl --global creates symlinks in /etc/systemd/user/default.target.wants/
+    # which applies to ALL users' sessions.
+    systemctl --user --global enable pipewire.service 2>/dev/null || true
+    systemctl --user --global enable pipewire-pulse.service 2>/dev/null || true
+    systemctl --user --global enable wireplumber.service 2>/dev/null || true
 
+    # Belt-and-suspenders: create the symlinks manually in case systemctl failed.
+    # /etc/systemd/user/ = global (all users); /home/liveuser/.config/... = liveuser-specific
+    mkdir -p /etc/systemd/user/default.target.wants
+    for svc in pipewire.service pipewire-pulse.service wireplumber.service; do
+        ln -sf /usr/lib/systemd/user/\$svc /etc/systemd/user/default.target.wants/\$svc 2>/dev/null || true
+    done
+
+    # Create liveuser-specific symlinks (user-local override, takes priority)
+    mkdir -p /home/liveuser/.config/systemd/user/default.target.wants
+    for svc in pipewire.service pipewire-pulse.service wireplumber.service; do
+        ln -sf /usr/lib/systemd/user/\$svc \
+            /home/liveuser/.config/systemd/user/default.target.wants/\$svc 2>/dev/null || true
+    done
+    chown -R liveuser:liveuser /home/liveuser/.config
+
+    # Also do root (belt and suspenders)
+    mkdir -p /root/.config/systemd/user/default.target.wants
+    for svc in pipewire.service pipewire-pulse.service wireplumber.service; do
+        ln -sf /usr/lib/systemd/user/\$svc \
+            /root/.config/systemd/user/default.target.wants/\$svc 2>/dev/null || true
+    done
+"
 echo -e "${GREEN}✓ PipeWire audio services enabled${NC}"
 
 # Step 8.6: Create PipeWire autostart script for live ISO
@@ -464,27 +933,22 @@ sudo tee "${SQUASHFS_ROOTFS}/etc/profile.d/pipewire-start.sh" > /dev/null << 'EO
 #!/bin/bash
 # PipeWire autostart script for live ISO
 # Starts PipeWire services when user session begins
-
-# Only run if PipeWire is not already running
-if ! systemctl --user is-active --quiet pipewire.service 2>/dev/null; then
-    # Ensure systemd user instance is running
-    if ! systemctl --user is-system-running >/dev/null 2>&1; then
-        # Start systemd user instance
-        systemctl --user start default.target 2>/dev/null || true
+if [ -n "$PS1" ] && [ -n "$XDG_RUNTIME_DIR" ]; then
+    if ! systemctl --user is-active --quiet pipewire.service 2>/dev/null; then
+        (
+            sleep 2
+            systemctl --user start pipewire.service 2>/dev/null || true
+            systemctl --user start wireplumber.service 2>/dev/null || true
+            systemctl --user start pipewire-pulse.service 2>/dev/null || true
+        ) &
     fi
-    
-    # Start PipeWire services
-    systemctl --user start pipewire.service 2>/dev/null || true
-    systemctl --user start wireplumber.service 2>/dev/null || true
-    systemctl --user start pipewire-pulse.service 2>/dev/null || true
 fi
 EOF
-
 sudo chmod +x "${SQUASHFS_ROOTFS}/etc/profile.d/pipewire-start.sh"
 
-# Also create KDE Plasma environment script for Wayland session
-sudo mkdir -p "${SQUASHFS_ROOTFS}/root/.config/plasma-workspace/env"
-sudo tee "${SQUASHFS_ROOTFS}/root/.config/plasma-workspace/env/pipewire.sh" > /dev/null << 'EOF'
+# KDE Plasma environment script for liveuser Wayland session
+sudo mkdir -p "${SQUASHFS_ROOTFS}/home/liveuser/.config/plasma-workspace/env"
+sudo tee "${SQUASHFS_ROOTFS}/home/liveuser/.config/plasma-workspace/env/pipewire.sh" > /dev/null << 'EOF'
 #!/bin/bash
 # Start PipeWire services for KDE Plasma session
 if command -v systemctl >/dev/null 2>&1; then
@@ -493,11 +957,39 @@ if command -v systemctl >/dev/null 2>&1; then
     systemctl --user start pipewire-pulse.service 2>/dev/null || true
 fi
 EOF
-
-sudo chmod +x "${SQUASHFS_ROOTFS}/root/.config/plasma-workspace/env/pipewire.sh"
-sudo chown -R root:root "${SQUASHFS_ROOTFS}/root/.config/plasma-workspace/env/pipewire.sh" 2>/dev/null || true
+sudo chmod +x "${SQUASHFS_ROOTFS}/home/liveuser/.config/plasma-workspace/env/pipewire.sh"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" chown -R liveuser:liveuser /home/liveuser/.config
 
 echo -e "${GREEN}✓ PipeWire autostart scripts created${NC}"
+
+# Step 8.7: Configure NetworkManager for proper WiFi support
+echo -e "${BLUE}Configuring NetworkManager for WiFi...${NC}"
+sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/NetworkManager/conf.d"
+
+# Configure NetworkManager to use wpa_supplicant backend (not iwd)
+sudo tee "${SQUASHFS_ROOTFS}/etc/NetworkManager/conf.d/wifi-backend.conf" > /dev/null << 'EOF'
+[device]
+wifi.backend=wpa_supplicant
+EOF
+
+# Enable WiFi and networking
+sudo tee "${SQUASHFS_ROOTFS}/etc/NetworkManager/conf.d/wifi.conf" > /dev/null << 'EOF'
+[main]
+plugins=keyfile
+# Hand DNS management to systemd-resolved (reads /run/systemd/resolve/stub-resolv.conf)
+dns=systemd-resolved
+
+[keyfile]
+unmanaged-devices=none
+
+[device]
+wifi.scan-rand-mac-address=yes
+
+[connection]
+wifi.powersave=2
+EOF
+
+echo -e "${GREEN}✓ NetworkManager configured for WiFi${NC}"
 
 # Step 9: Configure SDDM autologin for live boot
 echo -e "${BLUE}Configuring SDDM autologin for live boot...${NC}"
@@ -505,10 +997,11 @@ echo -e "${BLUE}Configuring SDDM autologin for live boot...${NC}"
 # Create SDDM configuration directory
 sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/sddm.conf.d"
 
-# Configure autologin as root for live boot
+# Configure autologin as liveuser for live boot
+# Using a non-root user fixes PipeWire audio and follows standard live ISO practice
 sudo tee "${SQUASHFS_ROOTFS}/etc/sddm.conf.d/autologin.conf" > /dev/null << 'EOF'
 [Autologin]
-User=root
+User=liveuser
 Session=plasma
 
 [General]
@@ -525,7 +1018,54 @@ SessionCommand=/usr/share/sddm/scripts/Xsession
 SessionDir=/usr/share/xsessions
 EOF
 
-echo -e "${GREEN}✓ SDDM autologin configured for root user with Wayland session${NC}"
+echo -e "${GREEN}✓ SDDM autologin configured for liveuser with Wayland session${NC}"
+
+# ============================================================================
+# Set up liveuser XDG directories and desktop shortcuts
+# ============================================================================
+echo -e "${BLUE}Setting up liveuser XDG user directories...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    # Create standard XDG directories
+    mkdir -p /home/liveuser/{Desktop,Downloads,Documents,Pictures,Music,Videos,Templates,Public}
+
+    # Write xdg-user-dirs config so KDE and apps know the paths
+    mkdir -p /home/liveuser/.config
+    cat > /home/liveuser/.config/user-dirs.dirs << 'XDGEOF'
+XDG_DESKTOP_DIR=\"\$HOME/Desktop\"
+XDG_DOWNLOAD_DIR=\"\$HOME/Downloads\"
+XDG_TEMPLATES_DIR=\"\$HOME/Templates\"
+XDG_PUBLICSHARE_DIR=\"\$HOME/Public\"
+XDG_DOCUMENTS_DIR=\"\$HOME/Documents\"
+XDG_MUSIC_DIR=\"\$HOME/Music\"
+XDG_PICTURES_DIR=\"\$HOME/Pictures\"
+XDG_VIDEOS_DIR=\"\$HOME/Videos\"
+XDGEOF
+    echo 'enabled=True' > /home/liveuser/.config/user-dirs.locale
+
+    # Ensure correct ownership of the entire home directory
+    chown -R liveuser:liveuser /home/liveuser
+"
+echo -e "${GREEN}✓ XDG directories created for liveuser${NC}"
+
+# Create Calamares installer shortcut on liveuser's Desktop
+echo -e "${BLUE}Creating installer desktop shortcut for liveuser...${NC}"
+sudo tee "${SQUASHFS_ROOTFS}/home/liveuser/Desktop/install-jarvisos.desktop" > /dev/null << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Install JARVIS OS
+Comment=Install JARVIS OS to your hard drive
+Exec=sudo -E calamares
+Icon=calamares
+Terminal=false
+StartupNotify=true
+Categories=System;
+X-KDE-StartupNotify=true
+EOF
+sudo chmod +x "${SQUASHFS_ROOTFS}/home/liveuser/Desktop/install-jarvisos.desktop"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" chown liveuser:liveuser \
+    /home/liveuser/Desktop/install-jarvisos.desktop
+echo -e "${GREEN}✓ Installer shortcut created on liveuser Desktop${NC}"
 
 # Step 10: Cleanup inside chroot
 echo -e "${BLUE}Cleaning up package cache and temporary files...${NC}"

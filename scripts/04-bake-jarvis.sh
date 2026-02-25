@@ -4,8 +4,9 @@
 
 set -e
 
-# Source config file
+# Source config file and shared utilities
 source build.config
+source "$(dirname "${BASH_SOURCE[0]}")/build-utils.sh"
 
 # Validate required variables
 if [ -z "${SCRIPTS_DIR}" ]; then
@@ -51,19 +52,8 @@ if [ ! -d "${PROJECT_JARVIS}" ]; then
     exit 1
 fi
 
-# Determine chroot command
-if command -v arch-chroot >/dev/null 2>&1; then
-    CHROOT_CMD="arch-chroot"
-    echo -e "${BLUE}Using arch-chroot${NC}"
-elif command -v systemd-nspawn >/dev/null 2>&1; then
-    CHROOT_CMD="systemd-nspawn"
-    echo -e "${YELLOW}Using systemd-nspawn (arch-chroot not found)${NC}"
-    echo -e "${YELLOW}Tip: Install arch-install-scripts for better compatibility${NC}"
-else
-    echo -e "${RED}Error: Need arch-chroot or systemd-nspawn!${NC}" >&2
-    echo -e "${YELLOW}Install: sudo dnf install arch-install-scripts${NC}"
-    exit 1
-fi
+# Determine chroot command (distro-aware error messages via build-utils.sh)
+detect_chroot_cmd
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}Step 4: Installing Project-JARVIS${NC}"
@@ -119,21 +109,70 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
 
 # Step 4: Install Ollama
 echo -e "${BLUE}Installing Ollama...${NC}"
+# The install.sh script tries to run systemd in chroot which will fail - we suppress that
+# We use a custom approach: download the binary and install it manually
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
-    curl -fsSL https://ollama.com/install.sh | sh || {
-        echo 'Warning: Ollama installation script failed, trying manual installation...'
-        # Fallback: download and install manually
-        curl -L https://ollama.com/download/ollama-linux-amd64 -o /tmp/ollama
-        chmod +x /tmp/ollama
-        mv /tmp/ollama /usr/local/bin/ollama || cp /tmp/ollama /usr/local/bin/ollama
-    }
+    # Try the official install script first (it handles binary download and GPU detection)
+    # OLLAMA_NO_SYSTEM_SERVICE=1 prevents systemd service creation in chroot
+    if curl -fsSL https://ollama.com/install.sh | OLLAMA_NO_SYSTEM_SERVICE=1 sh 2>/dev/null; then
+        echo '✓ Ollama installed via install.sh'
+    else
+        echo 'Warning: Ollama install.sh failed or not available, trying direct binary download...'
+        ARCH=\$(uname -m)
+        if [ \"\${ARCH}\" = 'x86_64' ]; then
+            OLLAMA_URL='https://ollama.com/download/ollama-linux-amd64'
+        elif [ \"\${ARCH}\" = 'aarch64' ]; then
+            OLLAMA_URL='https://ollama.com/download/ollama-linux-arm64'
+        else
+            echo 'Warning: Unsupported architecture for Ollama: '\${ARCH}
+            exit 0
+        fi
+
+        if curl -fsSL -o /usr/local/bin/ollama \"\${OLLAMA_URL}\"; then
+            chmod +x /usr/local/bin/ollama
+            echo '✓ Ollama binary installed manually'
+        else
+            echo 'Warning: Could not download Ollama binary - it can be installed later'
+            echo 'Run: curl -fsSL https://ollama.com/install.sh | sh'
+            exit 0
+        fi
+    fi
+
+    # Install systemd service file for use after installation (not enabled in chroot)
+    mkdir -p /usr/lib/systemd/system
+    cat > /usr/lib/systemd/system/ollama.service << 'OLLAMAEOF'
+[Unit]
+Description=Ollama Service
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/ollama serve
+User=ollama
+Group=ollama
+Restart=always
+RestartSec=3
+Environment=\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"
+Environment=\"HOME=/usr/share/ollama\"
+Environment=\"OLLAMA_HOST=0.0.0.0\"
+
+[Install]
+WantedBy=default.target
+OLLAMAEOF
+
+    # Create ollama user/group for the service
+    if ! getent group ollama >/dev/null 2>&1; then
+        groupadd -r ollama 2>/dev/null || true
+    fi
+    if ! getent passwd ollama >/dev/null 2>&1; then
+        useradd -r -g ollama -d /usr/share/ollama -s /bin/false -c 'Ollama Service' ollama 2>/dev/null || true
+    fi
+    mkdir -p /usr/share/ollama
+    chown -R ollama:ollama /usr/share/ollama 2>/dev/null || true
 "
 
-# Enable Ollama service
-echo -e "${BLUE}Enabling Ollama service...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable ollama || {
-    echo -e "${YELLOW}Warning: Could not enable Ollama service (may need manual setup)${NC}"
-}
+# Note: Ollama service not enabled in chroot (systemd not running)
+# It will be started via autostart on live boot, and can be enabled after installation
+echo -e "${BLUE}Ollama installed - service will autostart via XDG autostart on live boot${NC}"
 
 # Step 5: Create jarvis user and group
 echo -e "${BLUE}Creating jarvis user and group...${NC}"
@@ -299,10 +338,13 @@ VENV_PATH = Path("/var/lib/jarvis/venv")
 if VENV_PATH.exists():
     venv_python = VENV_PATH / "bin" / "python3"
     if venv_python.exists():
-        # Prepend venv site-packages to path
-        venv_site = VENV_PATH / "lib" / "python3" / "site-packages"
-        if venv_site.exists():
-            sys.path.insert(0, str(venv_site))
+        # Find the actual versioned site-packages directory (e.g., python3.12)
+        import glob
+        venv_site_pattern = str(VENV_PATH / "lib" / "python3*" / "site-packages")
+        venv_sites = glob.glob(venv_site_pattern)
+        for venv_site in venv_sites:
+            if Path(venv_site).exists():
+                sys.path.insert(0, venv_site)
 
 # Add JARVIS to Python path
 # The jarvis module is at /usr/lib/jarvis/, so add /usr/lib to path
@@ -414,11 +456,27 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     fi
 "
 
-# Step 13: Enable jarvis service (but don't start - it's a live ISO)
-echo -e "${BLUE}Enabling jarvis service...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable jarvis.service || {
-    echo -e "${YELLOW}Warning: Could not enable jarvis service${NC}"
-}
+# Step 13: Skip enabling services in arch-chroot (systemd not running)
+# Services will be enabled by Calamares post-install scripts after actual OS installation
+echo -e "${BLUE}Systemd services installed - will be enabled after Calamares installation${NC}"
+
+# Create autostart script for Ollama in live environment
+echo -e "${BLUE}Creating Ollama autostart for live environment...${NC}"
+sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/xdg/autostart"
+sudo tee "${SQUASHFS_ROOTFS}/etc/xdg/autostart/ollama.desktop" > /dev/null << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Ollama Service
+Comment=Start Ollama server for JARVIS
+Exec=/usr/local/bin/ollama serve
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+Hidden=false
+NoDisplay=true
+EOF
+
+sudo chmod 644 "${SQUASHFS_ROOTFS}/etc/xdg/autostart/ollama.desktop"
 
 # Step 14: Cleanup package cache
 echo -e "${BLUE}Cleaning up package cache...${NC}"

@@ -4,8 +4,9 @@
 
 set -e
 
-# Source config file
+# Source config file and shared utilities
 source build.config
+source "$(dirname "${BASH_SOURCE[0]}")/build-utils.sh"
 
 # Validate required variables
 if [ -z "${SCRIPTS_DIR}" ]; then
@@ -54,7 +55,7 @@ echo -e "${BLUE}Output: ${SQUASHFS_ROOTFS}${NC}"
 # Check if unsquashfs is available
 if ! command -v unsquashfs &> /dev/null; then
     echo -e "${RED}Error: unsquashfs not found. Please install squashfs-tools${NC}" >&2
-    echo -e "${YELLOW}Install with: sudo dnf install squashfs-tools${NC}"
+    echo -e "${YELLOW}Install: $(pkg_install_hint squashfs-tools)${NC}"
     exit 1
 fi
 
