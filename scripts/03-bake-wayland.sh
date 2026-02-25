@@ -232,8 +232,7 @@ echo -e "${BLUE}Installing Xorg video drivers...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
     xf86-video-amdgpu \
     xf86-video-intel \
-    xf86-video-nouveau \
-    xf86-video-vmware
+    xf86-video-nouveau
 
 # ============================================================================
 # Linux firmware (CRITICAL for hardware support - WiFi, audio, touchpad, etc)
