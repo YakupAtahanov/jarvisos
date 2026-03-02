@@ -229,6 +229,83 @@ fi
 
 echo -e "${GREEN}✓ SuperMCP verified successfully${NC}"
 
+# ---- DMCP: build and install -----------------------------------------------
+# dmcp is a Rust binary (MCP server manager). We build it on the host for the
+# target architecture and drop the binary into the rootfs at /usr/bin/dmcp.
+# Building inside the chroot would require installing Rust there; building on
+# the host and copying is simpler and faster.
+
+DMCP_DIR="${PROJECT_ROOT}/dmcp"
+DMCP_BINARY_SRC="${DMCP_DIR}/target/release/dmcp"
+
+echo -e "${BLUE}Building dmcp (MCP server manager)...${NC}"
+
+if [ ! -d "${DMCP_DIR}" ]; then
+    echo -e "${YELLOW}Warning: dmcp directory not found at ${DMCP_DIR} — skipping DMCP install${NC}"
+else
+    # Check Rust toolchain on host
+    if ! command -v cargo &>/dev/null; then
+        echo -e "${YELLOW}Warning: cargo not found on host — skipping dmcp build.${NC}"
+        echo -e "${YELLOW}Install Rust (https://rustup.rs/) and re-run to include dmcp.${NC}"
+    else
+        (cd "${DMCP_DIR}" && cargo build --release 2>&1) || {
+            echo -e "${RED}ERROR: dmcp build failed${NC}" >&2
+            exit 1
+        }
+
+        if [ ! -f "${DMCP_BINARY_SRC}" ]; then
+            echo -e "${RED}ERROR: expected dmcp binary at ${DMCP_BINARY_SRC}${NC}" >&2
+            exit 1
+        fi
+
+        echo -e "${BLUE}Installing dmcp binary to rootfs...${NC}"
+        sudo cp "${DMCP_BINARY_SRC}" "${SQUASHFS_ROOTFS}/usr/bin/dmcp"
+        sudo chmod 755 "${SQUASHFS_ROOTFS}/usr/bin/dmcp"
+        sudo chown root:root "${SQUASHFS_ROOTFS}/usr/bin/dmcp"
+
+        # System-level MCP sources list (empty by default; registry URLs added here)
+        sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/mcp"
+        sudo tee "${SQUASHFS_ROOTFS}/etc/mcp/sources.list" > /dev/null << 'DMCP_SOURCES_EOF'
+# /etc/mcp/sources.list — system-wide dmcp registry sources
+# Add registry URLs below (one per line). Lines starting with # are ignored.
+# Example:
+#   https://raw.githubusercontent.com/example/mcp-registry/main/registry.json
+DMCP_SOURCES_EOF
+        sudo chmod 644 "${SQUASHFS_ROOTFS}/etc/mcp/sources.list"
+
+        # dmcp systemd service (runs `dmcp serve` as the jarvis user so JARVIS
+        # can use it as its MCP server via stdio)
+        sudo tee "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/dmcp.service" > /dev/null << 'DMCP_SVC_EOF'
+[Unit]
+Description=DMCP MCP Server Manager
+Documentation=man:dmcp(1)
+After=network.target
+PartOf=jarvis.service
+
+[Service]
+Type=simple
+User=jarvis
+Group=jarvis
+ExecStart=/usr/bin/dmcp serve
+Restart=on-failure
+RestartSec=3
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+Environment="HOME=/var/lib/jarvis"
+Environment="XDG_DATA_HOME=/var/lib/jarvis/.local/share"
+Environment="XDG_CONFIG_HOME=/etc"
+
+[Install]
+WantedBy=multi-user.target
+DMCP_SVC_EOF
+        sudo chmod 644 "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/dmcp.service"
+
+        echo -e "${GREEN}✓ dmcp installed (/usr/bin/dmcp + dmcp.service)${NC}"
+    fi
+fi
+# ---- end DMCP ---------------------------------------------------------------
+
 # Step 8: Install Python dependencies in virtual environment
 echo -e "${BLUE}Installing Python dependencies...${NC}"
 
