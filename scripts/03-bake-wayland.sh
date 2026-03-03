@@ -167,7 +167,7 @@ fi
 # CRITICAL: Install Linux kernel package
 # ============================================================================
 echo -e "${BLUE}Installing Linux kernel...${NC}"
-if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm linux linux-headers 2>&1; then
+if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed linux linux-headers 2>&1; then
     echo -e "${RED}FATAL: Failed to install linux kernel package${NC}" >&2
     exit 1
 fi
@@ -186,15 +186,15 @@ echo -e "${BLUE}Installing GUI packages...${NC}"
 
 # Wayland core
 echo -e "${BLUE}Installing Wayland core...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm wayland wayland-protocols xorg-xwayland
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed wayland wayland-protocols xorg-xwayland
 
 # KDE Plasma Desktop Environment
 echo -e "${BLUE}Installing KDE Plasma Desktop Environment...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-meta sddm
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed plasma-meta sddm
 
 # Essential KDE applications (kde-applications-meta was removed from Arch repos)
 echo -e "${BLUE}Installing essential KDE applications...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     ark \
     dolphin \
     gwenview \
@@ -212,7 +212,7 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
 
 # Graphics drivers
 echo -e "${BLUE}Installing graphics drivers...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     mesa \
     vulkan-intel \
     vulkan-radeon \
@@ -222,14 +222,14 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
 
 # VA-API drivers (hardware video decode for Intel and AMD)
 echo -e "${BLUE}Installing VA-API drivers (hardware video decode)...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     intel-media-driver \
     libva-intel-driver \
     libva-utils
 
 # Xorg video drivers (fallback for X11 sessions and display quirks)
 echo -e "${BLUE}Installing Xorg video drivers...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     xf86-video-amdgpu \
     xf86-video-intel \
     xf86-video-nouveau
@@ -238,7 +238,7 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
 # Linux firmware (CRITICAL for hardware support - WiFi, audio, touchpad, etc)
 # ============================================================================
 echo -e "${BLUE}Installing comprehensive Linux firmware...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     linux-firmware \
     linux-firmware-marvell \
     linux-firmware-bnx2x \
@@ -253,7 +253,7 @@ echo -e "${GREEN}✓ Linux firmware installed${NC}"
 
 # CPU microcode (Intel and AMD)
 echo -e "${BLUE}Installing CPU microcode...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm intel-ucode amd-ucode
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed intel-ucode amd-ucode
 
 # ============================================================================
 # Audio stack (PipeWire) - CRITICAL for working audio
@@ -265,17 +265,17 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     yes | pacman -S --needed pipewire pipewire-alsa pipewire-pulse pipewire-jack wireplumber || {
         echo 'Retrying with force...'
         pacman -Rdd --noconfirm jack2  # Remove without checking deps
-        pacman -S --noconfirm pipewire pipewire-alsa pipewire-pulse pipewire-jack wireplumber
+        pacman -S --noconfirm --needed pipewire pipewire-alsa pipewire-pulse pipewire-jack wireplumber
     }
 "
 
 # KDE Audio Applet and volume control
 echo -e "${BLUE}Installing KDE audio applet...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm plasma-pa pavucontrol
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed plasma-pa pavucontrol
 
 # ALSA utilities and firmware (required for audio hardware detection)
 echo -e "${BLUE}Installing ALSA utilities and firmware...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     alsa-utils \
     alsa-firmware \
     alsa-plugins \
@@ -285,7 +285,7 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
 
 # RealtimeKit and Sound Open Firmware (CRITICAL for PipeWire audio)
 echo -e "${BLUE}Installing RealtimeKit and SOF firmware for real-time audio...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     rtkit \
     sof-firmware
 # Note: alsa-card-profiles is provided by pipewire-alsa, no need to install separately
@@ -294,20 +294,20 @@ echo -e "${GREEN}✓ PipeWire audio stack installed${NC}"
 
 # Cursor themes
 echo -e "${BLUE}Installing cursor themes...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm xcursor-themes breeze breeze-icons adwaita-icon-theme
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed xcursor-themes breeze breeze-icons adwaita-icon-theme
 
 # ============================================================================
 # Networking and WiFi (CRITICAL for live boot connectivity)
 # ============================================================================
 echo -e "${BLUE}Installing networking stack...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     networkmanager \
     plasma-nm \
     network-manager-applet
 
 # WiFi authentication and tools (CRITICAL for password-protected networks)
 echo -e "${BLUE}Installing WiFi authentication and management tools...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     wpa_supplicant \
     iw \
     wireless_tools \
@@ -321,19 +321,19 @@ echo -e "${GREEN}✓ WiFi tools installed${NC}"
 
 # Bluetooth
 echo -e "${BLUE}Installing Bluetooth...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm bluez bluez-utils bluedevil
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed bluez bluez-utils bluedevil
 
 # Fonts
 echo -e "${BLUE}Installing fonts...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm ttf-dejavu ttf-liberation noto-fonts noto-fonts-emoji ttf-hack
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed ttf-dejavu ttf-liberation noto-fonts noto-fonts-emoji ttf-hack
 
 # Development tools for JARVIS
 echo -e "${BLUE}Installing development tools...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm base-devel git python python-pip nodejs npm wget curl vim
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed base-devel git python python-pip nodejs npm wget curl vim
 
 # System utilities (standard in Arch ISO)
 echo -e "${BLUE}Installing system utilities...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     sudo \
     less \
     man-db \
@@ -360,13 +360,13 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
 
 # Essential applications (browser - kate/konsole/dolphin already installed with KDE apps)
 echo -e "${BLUE}Installing essential applications...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm firefox vlc
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed firefox vlc
 
 # ============================================================================
 # Touchpad/Input drivers (CRITICAL for laptop touchpad functionality)
 # ============================================================================
 echo -e "${BLUE}Installing input drivers and utilities...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     libinput \
     xf86-input-libinput \
     xorg-xinput \
@@ -375,7 +375,7 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
 
 # Input device debugging tools (for troubleshooting touchpad issues)
 echo -e "${BLUE}Installing input debugging tools...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm evtest libevdev
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed evtest libevdev
 
 echo -e "${GREEN}✓ Input drivers installed${NC}"
 
@@ -386,7 +386,7 @@ echo -e "${GREEN}✓ Input drivers installed${NC}"
 # qt5-wayland / qt6-wayland: Qt apps must use these to render natively on Wayland
 # xdg-user-dirs: Creates Desktop, Downloads, Documents, etc. for liveuser
 echo -e "${BLUE}Installing Wayland portal support and XDG utilities...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     xdg-user-dirs \
     xdg-desktop-portal \
     xdg-desktop-portal-kde \
@@ -492,7 +492,7 @@ echo -e "${GREEN}✓ ALSA configured for PipeWire${NC}"
 # These hooks are REQUIRED for the initramfs to mount the squashfs rootfs
 # during live boot. Without archiso hook, the kernel cannot find root.
 echo -e "${BLUE}Installing archiso package (live boot hooks)...${NC}"
-if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm archiso 2>&1; then
+if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed archiso 2>&1; then
     echo -e "${RED}FATAL: Failed to install archiso package${NC}" >&2
     echo -e "${YELLOW}The archiso package provides memdisk and archiso mkinitcpio hooks${NC}"
     echo -e "${YELLOW}Without these hooks, the live ISO CANNOT BOOT${NC}"

@@ -90,14 +90,14 @@ echo -e "${BLUE}Installing system dependencies for JARVIS...${NC}"
 # Audio libraries (for voice input/output)
 # Note: PipeWire is already installed in step 3, so we don't need pulseaudio
 echo -e "${BLUE}Installing audio libraries...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     portaudio \
     alsa-utils \
     python-pyaudio
 
 # Python development tools (for building Python packages)
 echo -e "${BLUE}Installing Python development tools...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     python \
     python-pip \
     python-virtualenv \

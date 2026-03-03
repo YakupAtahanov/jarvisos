@@ -137,7 +137,7 @@ CALAMARES_INSTALLED=false
 echo -e "${BLUE}Checking if Calamares is available in chaotic-aur...${NC}"
 if sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Ss calamares 2>/dev/null | grep -q "chaotic-aur/calamares"; then
     echo -e "${BLUE}Found Calamares in chaotic-aur, installing...${NC}"
-    sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm calamares && CALAMARES_INSTALLED=true
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed calamares && CALAMARES_INSTALLED=true
 else
     echo -e "${YELLOW}Calamares not found in chaotic-aur, will build from AUR...${NC}"
 fi

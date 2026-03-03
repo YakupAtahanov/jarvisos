@@ -59,100 +59,122 @@ KERNEL_BACKUP_DIR="${BUILD_DIR}/kernel-files"
 ROOTFS_BOOT="${BUILD_DIR}/iso-rootfs/boot"
 ISO_BOOT_DIR="${ISO_EXTRACT_DIR}/arch/boot/x86_64"
 
-# Determine source directory for kernel files (prefer backup, fallback to rootfs)
+# ── Helper: copy one kernel file into the ISO boot dir ───────────────────────
+copy_kernel_file_to_iso() {
+    local filename="$1"
+    local source_dir="$2"
+    local is_backup="$3"    # "backup" or "rootfs"
+
+    if [ "${is_backup}" = "backup" ]; then
+        if [ -f "${source_dir}/${filename}" ]; then
+            cp "${source_dir}/${filename}" "${ISO_BOOT_DIR}/"
+            return 0
+        fi
+    else
+        if sudo test -f "${source_dir}/${filename}"; then
+            sudo cp "${source_dir}/${filename}" "${ISO_BOOT_DIR}/"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Determine source directory for the stock linux kernel files
+# (prefer backup dir, fall back to rootfs/boot)
 KERNEL_SOURCE=""
+KERNEL_SOURCE_TYPE=""
 if [ -d "${KERNEL_BACKUP_DIR}" ] && [ -f "${KERNEL_BACKUP_DIR}/vmlinuz-linux" ]; then
     KERNEL_SOURCE="${KERNEL_BACKUP_DIR}"
+    KERNEL_SOURCE_TYPE="backup"
     echo -e "${BLUE}Using kernel files from backup directory${NC}"
 elif sudo test -d "${ROOTFS_BOOT}" && sudo test -f "${ROOTFS_BOOT}/vmlinuz-linux"; then
     KERNEL_SOURCE="${ROOTFS_BOOT}"
+    KERNEL_SOURCE_TYPE="rootfs"
     echo -e "${BLUE}Using kernel files from rootfs boot directory${NC}"
 else
-    echo -e "${RED}FATAL ERROR: Cannot find kernel files!${NC}" >&2
+    echo -e "${RED}FATAL ERROR: Cannot find stock linux kernel files!${NC}" >&2
     echo -e "${YELLOW}Searched locations:${NC}"
     echo -e "${YELLOW}  1. ${KERNEL_BACKUP_DIR}${NC}"
     echo -e "${YELLOW}  2. ${ROOTFS_BOOT}${NC}"
-    echo ""
-    echo -e "${RED}The kernel was not installed or backed up during step 3.${NC}"
-    echo -e "${YELLOW}Please run: make step3${NC}"
+    echo -e "${RED}Please run: make step3${NC}"
     exit 1
 fi
 
 # Ensure ISO boot directory exists
 mkdir -p "${ISO_BOOT_DIR}"
 
-# Copy kernel (vmlinuz-linux)
-echo -e "${BLUE}Copying kernel...${NC}"
-if [ "${KERNEL_SOURCE}" = "${KERNEL_BACKUP_DIR}" ]; then
-    cp "${KERNEL_SOURCE}/vmlinuz-linux" "${ISO_BOOT_DIR}/"
-else
-    sudo cp "${KERNEL_SOURCE}/vmlinuz-linux" "${ISO_BOOT_DIR}/"
-fi
+# ── Copy stock linux kernel (for live boot) ───────────────────────────────────
+echo -e "${BLUE}Copying stock linux kernel (live boot)...${NC}"
+copy_kernel_file_to_iso "vmlinuz-linux" "${KERNEL_SOURCE}" "${KERNEL_SOURCE_TYPE}"
 KERNEL_SIZE=$(du -h "${ISO_BOOT_DIR}/vmlinuz-linux" | cut -f1)
 echo -e "${GREEN}✓ Copied vmlinuz-linux (${KERNEL_SIZE})${NC}"
 
-# Copy main initramfs (initramfs-linux.img)
+# Copy main initramfs
 echo -e "${BLUE}Copying initramfs...${NC}"
-if [ "${KERNEL_SOURCE}" = "${KERNEL_BACKUP_DIR}" ]; then
-    cp "${KERNEL_SOURCE}/initramfs-linux.img" "${ISO_BOOT_DIR}/"
-else
-    sudo cp "${KERNEL_SOURCE}/initramfs-linux.img" "${ISO_BOOT_DIR}/"
-fi
+copy_kernel_file_to_iso "initramfs-linux.img" "${KERNEL_SOURCE}" "${KERNEL_SOURCE_TYPE}"
 INITRAMFS_SIZE=$(du -h "${ISO_BOOT_DIR}/initramfs-linux.img" | cut -f1)
-echo -e "${GREEN}✓ Copied initramfs-linux.img (${INITRAMFS_SIZE})${NC}"
-echo -e "${GREEN}  This initramfs contains ALL hardware modules${NC}"
+echo -e "${GREEN}✓ Copied initramfs-linux.img (${INITRAMFS_SIZE}) — all hardware modules${NC}"
 
-# Copy fallback initramfs if it exists
-FALLBACK_EXISTS=false
-if [ "${KERNEL_SOURCE}" = "${KERNEL_BACKUP_DIR}" ]; then
-    [ -f "${KERNEL_SOURCE}/initramfs-linux-fallback.img" ] && FALLBACK_EXISTS=true
-else
-    sudo test -f "${KERNEL_SOURCE}/initramfs-linux-fallback.img" && FALLBACK_EXISTS=true
-fi
-
-if [ "${FALLBACK_EXISTS}" = true ]; then
-    echo -e "${BLUE}Copying fallback initramfs...${NC}"
-    if [ "${KERNEL_SOURCE}" = "${KERNEL_BACKUP_DIR}" ]; then
-        cp "${KERNEL_SOURCE}/initramfs-linux-fallback.img" "${ISO_BOOT_DIR}/"
-    else
-        sudo cp "${KERNEL_SOURCE}/initramfs-linux-fallback.img" "${ISO_BOOT_DIR}/"
-    fi
+# Copy fallback initramfs if present
+if copy_kernel_file_to_iso "initramfs-linux-fallback.img" "${KERNEL_SOURCE}" "${KERNEL_SOURCE_TYPE}" 2>/dev/null; then
     FALLBACK_SIZE=$(du -h "${ISO_BOOT_DIR}/initramfs-linux-fallback.img" | cut -f1)
     echo -e "${GREEN}✓ Copied initramfs-linux-fallback.img (${FALLBACK_SIZE})${NC}"
 fi
 
-# Copy microcode images (AMD and Intel CPU microcode updates)
+# Copy microcode images
 echo -e "${BLUE}Copying microcode images...${NC}"
 MICROCODE_COPIED=0
 for ucode in amd-ucode.img intel-ucode.img; do
-    UCODE_EXISTS=false
-    if [ "${KERNEL_SOURCE}" = "${KERNEL_BACKUP_DIR}" ]; then
-        [ -f "${KERNEL_SOURCE}/${ucode}" ] && UCODE_EXISTS=true
-    else
-        sudo test -f "${KERNEL_SOURCE}/${ucode}" && UCODE_EXISTS=true
-    fi
-
-    if [ "${UCODE_EXISTS}" = true ]; then
-        if [ "${KERNEL_SOURCE}" = "${KERNEL_BACKUP_DIR}" ]; then
-            cp "${KERNEL_SOURCE}/${ucode}" "${ISO_BOOT_DIR}/"
-        else
-            sudo cp "${KERNEL_SOURCE}/${ucode}" "${ISO_BOOT_DIR}/"
-        fi
+    if copy_kernel_file_to_iso "${ucode}" "${KERNEL_SOURCE}" "${KERNEL_SOURCE_TYPE}" 2>/dev/null; then
         UCODE_SIZE=$(du -h "${ISO_BOOT_DIR}/${ucode}" | cut -f1)
         echo -e "${GREEN}✓ Copied ${ucode} (${UCODE_SIZE})${NC}"
         MICROCODE_COPIED=1
     fi
 done
+[ ${MICROCODE_COPIED} -eq 0 ] && echo -e "${YELLOW}⚠ No microcode images found (optional)${NC}"
 
-if [ ${MICROCODE_COPIED} -eq 0 ]; then
-    echo -e "${YELLOW}⚠ No microcode images found (optional)${NC}"
+# ── Copy linux-jarvisos kernel (for Calamares installation) ──────────────────
+echo -e "${BLUE}Copying linux-jarvisos kernel (Calamares install target)...${NC}"
+
+JARVISOS_KERNEL_AVAILABLE=false
+if [ -f "${KERNEL_BACKUP_DIR}/vmlinuz-linux-jarvisos" ]; then
+    cp "${KERNEL_BACKUP_DIR}/vmlinuz-linux-jarvisos" "${ISO_BOOT_DIR}/"
+    JARVISOS_KERNEL_SIZE=$(du -h "${ISO_BOOT_DIR}/vmlinuz-linux-jarvisos" | cut -f1)
+    echo -e "${GREEN}✓ Copied vmlinuz-linux-jarvisos (${JARVISOS_KERNEL_SIZE})${NC}"
+    JARVISOS_KERNEL_AVAILABLE=true
+
+    if [ -f "${KERNEL_BACKUP_DIR}/initramfs-linux-jarvisos.img" ]; then
+        cp "${KERNEL_BACKUP_DIR}/initramfs-linux-jarvisos.img" "${ISO_BOOT_DIR}/"
+        JJ_SIZE=$(du -h "${ISO_BOOT_DIR}/initramfs-linux-jarvisos.img" | cut -f1)
+        echo -e "${GREEN}✓ Copied initramfs-linux-jarvisos.img (${JJ_SIZE})${NC}"
+    fi
+    if [ -f "${KERNEL_BACKUP_DIR}/initramfs-linux-jarvisos-fallback.img" ]; then
+        cp "${KERNEL_BACKUP_DIR}/initramfs-linux-jarvisos-fallback.img" "${ISO_BOOT_DIR}/"
+        JF_SIZE=$(du -h "${ISO_BOOT_DIR}/initramfs-linux-jarvisos-fallback.img" | cut -f1)
+        echo -e "${GREEN}✓ Copied initramfs-linux-jarvisos-fallback.img (${JF_SIZE})${NC}"
+    fi
+elif sudo test -f "${ROOTFS_BOOT}/vmlinuz-linux-jarvisos"; then
+    sudo cp "${ROOTFS_BOOT}/vmlinuz-linux-jarvisos" "${ISO_BOOT_DIR}/"
+    JARVISOS_KERNEL_SIZE=$(du -h "${ISO_BOOT_DIR}/vmlinuz-linux-jarvisos" | cut -f1)
+    echo -e "${GREEN}✓ Copied vmlinuz-linux-jarvisos from rootfs (${JARVISOS_KERNEL_SIZE})${NC}"
+    JARVISOS_KERNEL_AVAILABLE=true
+
+    for f in initramfs-linux-jarvisos.img initramfs-linux-jarvisos-fallback.img; do
+        if sudo test -f "${ROOTFS_BOOT}/${f}"; then
+            sudo cp "${ROOTFS_BOOT}/${f}" "${ISO_BOOT_DIR}/"
+            echo -e "${GREEN}✓ Copied ${f}${NC}"
+        fi
+    done
+else
+    echo -e "${YELLOW}⚠ linux-jarvisos kernel not found in kernel-files/ or rootfs/boot/${NC}"
+    echo -e "${YELLOW}  Calamares will fall back to the stock linux kernel for installation.${NC}"
+    echo -e "${YELLOW}  Run 'make step3b' to build linux-jarvisos.${NC}"
 fi
 
-# Verify files were copied correctly
+# Verify stock kernel files were copied
 echo -e "${BLUE}Verifying copied files...${NC}"
 if [ ! -f "${ISO_BOOT_DIR}/vmlinuz-linux" ] || [ ! -f "${ISO_BOOT_DIR}/initramfs-linux.img" ]; then
-    echo -e "${RED}FATAL: Failed to copy kernel/initramfs to ISO structure${NC}" >&2
-    echo -e "${YELLOW}ISO boot directory contents:${NC}"
+    echo -e "${RED}FATAL: Failed to copy stock kernel/initramfs to ISO structure${NC}" >&2
     ls -lah "${ISO_BOOT_DIR}/" || true
     exit 1
 fi
@@ -160,11 +182,14 @@ fi
 # Show file info
 echo ""
 echo -e "${BLUE}Kernel files in ISO structure:${NC}"
-ls -lh "${ISO_BOOT_DIR}"/vmlinuz-linux "${ISO_BOOT_DIR}"/initramfs-linux* 2>/dev/null | awk '{print "  " $5, $9}'
+ls -lh "${ISO_BOOT_DIR}"/vmlinuz-linux* "${ISO_BOOT_DIR}"/initramfs-linux* 2>/dev/null \
+    | awk '{print "  " $5, $9}'
 
 echo ""
-echo -e "${GREEN}✓ Kernel and initramfs successfully copied to ISO structure${NC}"
-echo -e "${GREEN}✓ The ISO will now boot with the custom initramfs containing all modules${NC}"
+echo -e "${GREEN}✓ Stock linux kernel copied (live boot)${NC}"
+if [ "${JARVISOS_KERNEL_AVAILABLE}" = true ]; then
+    echo -e "${GREEN}✓ linux-jarvisos kernel copied (Calamares install target)${NC}"
+fi
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
