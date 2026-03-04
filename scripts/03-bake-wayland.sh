@@ -65,6 +65,72 @@ if [ ! -s "${SQUASHFS_ROOTFS}/etc/resolv.conf" ]; then
     printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' | sudo tee "${SQUASHFS_ROOTFS}/etc/resolv.conf" > /dev/null
 fi
 
+# Step 1b: Configure pacman mirrors and download settings
+# The base Arch ISO ships with a single mirror which can go slow.
+# Write a curated multi-mirror list and enable resilient download settings.
+echo -e "${BLUE}Configuring pacman mirrors...${NC}"
+
+_write_fallback_mirrors() {
+    sudo tee "${SQUASHFS_ROOTFS}/etc/pacman.d/mirrorlist" > /dev/null << 'MIRROREOF'
+# JARVIS OS build mirrorlist — curated 2026-03
+# Multiple geographically spread mirrors for resilience
+
+# Cloudflare (global CDN, usually fastest)
+Server = https://cloudflaremirrors.com/archlinux/$repo/os/$arch
+
+# Kernel.org (authoritative, highly reliable)
+Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch
+
+# MIT (US East, very reliable)
+Server = https://mirrors.mit.edu/archlinux/$repo/os/$arch
+
+# Oregon State University (US West)
+Server = https://ftp.osuosl.org/pub/archlinux/$repo/os/$arch
+
+# Xtom (EU/global CDN)
+Server = https://mirror.xtom.com/archlinux/$repo/os/$arch
+
+# iSolutions (Germany)
+Server = https://mirror.isoc.org.il/pub/archlinux/$repo/os/$arch
+
+# Gwdg (Germany)
+Server = https://ftp.gwdg.de/pub/linux/archlinux/$repo/os/$arch
+
+# Dotsrc (Denmark)
+Server = https://mirror.dotsrc.org/archlinux/$repo/os/$arch
+
+# Aarnet (Australia, backup)
+Server = https://mirror.aarnet.edu.au/pub/archlinux/$repo/os/$arch
+MIRROREOF
+}
+
+if command -v reflector &>/dev/null; then
+    echo -e "${BLUE}Using reflector to rank mirrors by speed...${NC}"
+    if reflector --country US,DE,FR,GB,NL,SE,CA \
+                 --latest 15 --sort rate --age 12 \
+                 --save "${SQUASHFS_ROOTFS}/etc/pacman.d/mirrorlist" 2>/dev/null; then
+        echo -e "${GREEN}✓ Mirrorlist updated via reflector${NC}"
+    else
+        echo -e "${YELLOW}reflector failed, using curated fallback mirrors${NC}"
+        _write_fallback_mirrors
+    fi
+else
+    echo -e "${YELLOW}reflector not found, using curated fallback mirrors${NC}"
+    _write_fallback_mirrors
+fi
+
+# Enable parallel downloads and remove the download timeout so slow mirrors
+# don't abort the transaction — pacman will just move to the next mirror.
+sudo sed -i \
+    -e 's/^#\?\(ParallelDownloads\).*/ParallelDownloads = 5/' \
+    "${SQUASHFS_ROOTFS}/etc/pacman.conf"
+# Append DisableDownloadTimeout if not already present (pacman 6.0+)
+sudo grep -q '^DisableDownloadTimeout' "${SQUASHFS_ROOTFS}/etc/pacman.conf" || \
+    sudo sed -i '/^ParallelDownloads/a DisableDownloadTimeout' \
+        "${SQUASHFS_ROOTFS}/etc/pacman.conf"
+
+echo -e "${GREEN}✓ Mirrors configured ($(sudo wc -l < "${SQUASHFS_ROOTFS}/etc/pacman.d/mirrorlist") lines)${NC}"
+
 # Step 2: Bind mount iso-rootfs to itself
 echo -e "${BLUE}Bind mounting iso-rootfs to itself...${NC}"
 sudo mount --bind "${SQUASHFS_ROOTFS}" "${SQUASHFS_ROOTFS}" || {

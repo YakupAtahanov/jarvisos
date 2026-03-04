@@ -1,0 +1,201 @@
+# Maintainer: JARVIS OS Team
+#
+# linux-jarvisos — Linux kernel with JARVIS AI integration drivers
+# linux-jarvisos-headers — Build headers for out-of-tree modules
+#
+# KERNEL_SRC must be exported to the absolute path of the linux/ submodule
+# before calling makepkg. scripts/03b-build-kernel.sh does this automatically.
+#
+# Usage (standalone):
+#   export KERNEL_SRC=/path/to/jarvisos/linux
+#   cd packages/linux-jarvisos
+#   PKGDEST=/tmp/pkgs makepkg --nodeps --nocheck --skipinteg --force
+
+pkgbase=linux-jarvisos
+pkgname=(linux-jarvisos linux-jarvisos-headers)
+pkgver=7.0.0rc2
+pkgrel=1
+pkgdesc='Linux kernel with JARVIS AI integration drivers'
+arch=(x86_64)
+url='https://github.com/majdaltouzach/linux'
+license=(GPL-2.0-only)
+makedepends=(bc cpio gettext libelf pahole perl python tar xz zstd)
+options=('!strip' '!debug' '!buildflags' '!makeflags')
+source=()
+sha256sums=()
+
+# Kernel source is provided by the caller via env var — no download needed.
+_ksrc="${KERNEL_SRC:?KERNEL_SRC must be set to the absolute path of the linux/ submodule}"
+_localversion='-jarvisos'
+
+prepare() {
+    cd "$_ksrc"
+
+    if [[ -f .config ]]; then
+        echo "  -> Updating existing .config with olddefconfig..."
+        make olddefconfig LOCALVERSION="$_localversion"
+    else
+        echo "  -> Generating baseline config from x86_64_defconfig..."
+        make x86_64_defconfig LOCALVERSION="$_localversion"
+    fi
+
+    echo "  -> Applying JARVIS kernel config options..."
+
+    # Core kernel features required by JARVIS driver
+    scripts/config --enable  CONFIG_MISC_DEVICES
+    scripts/config --enable  CONFIG_SYSFS
+    scripts/config --enable  CONFIG_KEYS
+    scripts/config --enable  CONFIG_THERMAL
+    scripts/config --enable  CONFIG_THERMAL_HWMON
+
+    # JARVIS driver and sub-modules
+    scripts/config --module  CONFIG_JARVIS
+    scripts/config --enable  CONFIG_JARVIS_SYSMON
+    scripts/config --enable  CONFIG_JARVIS_POLICY
+    scripts/config --enable  CONFIG_JARVIS_KEYS
+    scripts/config --enable  CONFIG_JARVIS_SYSFS_METRICS
+
+    # DIBS zero-copy integration (optional — present only if driver is in tree)
+    if grep -q "config DIBS" "$_ksrc/drivers/dibs/Kconfig" 2>/dev/null; then
+        scripts/config --module CONFIG_DIBS
+        scripts/config --enable CONFIG_JARVIS_DIBS
+        echo "  -> DIBS zero-copy integration enabled"
+    else
+        scripts/config --disable CONFIG_JARVIS_DIBS
+        echo "  -> DIBS not found — CONFIG_JARVIS_DIBS disabled"
+    fi
+
+    # Security and audit (needed by ELEVATED/DANGEROUS policy tiers)
+    scripts/config --enable CONFIG_SECURITY
+    scripts/config --enable CONFIG_AUDIT
+
+    # Networking (required by systemd and the OS)
+    scripts/config --enable CONFIG_NET
+    scripts/config --enable CONFIG_INET
+    scripts/config --enable CONFIG_UNIX
+    scripts/config --enable CONFIG_IPV6
+
+    # Live boot / squashfs (CRITICAL for archiso live boot hook)
+    scripts/config --enable CONFIG_SQUASHFS
+    scripts/config --enable CONFIG_SQUASHFS_ZSTD
+    scripts/config --enable CONFIG_OVERLAY_FS
+
+    # USB boot support (needed for live USB)
+    scripts/config --enable CONFIG_USB_SUPPORT
+    scripts/config --enable CONFIG_USB_XHCI_HCD
+    scripts/config --enable CONFIG_USB_EHCI_HCD
+    scripts/config --enable CONFIG_USB_STORAGE
+    scripts/config --enable CONFIG_USB_UAS
+
+    # Storage (SATA, NVMe)
+    scripts/config --enable CONFIG_ATA
+    scripts/config --enable CONFIG_SATA_AHCI
+    scripts/config --enable CONFIG_BLK_DEV_NVME
+
+    # Filesystems (needed for the installed system)
+    scripts/config --enable CONFIG_EXT4_FS
+    scripts/config --enable CONFIG_VFAT_FS
+    scripts/config --enable CONFIG_BTRFS_FS
+
+    # Resolve any new symbols introduced by the options above
+    make olddefconfig LOCALVERSION="$_localversion"
+}
+
+build() {
+    cd "$_ksrc"
+    make -j"$(nproc)" LOCALVERSION="$_localversion" bzImage modules
+}
+
+package_linux-jarvisos() {
+    pkgdesc='Linux kernel with JARVIS AI integration drivers'
+    depends=(coreutils kmod initramfs)
+    optdepends=(
+        'wireless-regdb: regulatory database for WiFi'
+        'linux-firmware: firmware for hardware devices'
+        'linux-jarvisos-headers: headers for building out-of-tree modules'
+    )
+    provides=("linux=${pkgver}")
+    backup=('etc/mkinitcpio.d/linux-jarvisos.preset')
+    install=linux-jarvisos.install
+
+    cd "$_ksrc"
+
+    local kernelrelease
+    kernelrelease=$(make -s kernelrelease LOCALVERSION="$_localversion")
+    local modulesdir="$pkgdir/usr/lib/modules/$kernelrelease"
+
+    echo "  -> Installing boot image..."
+    install -Dm644 arch/x86/boot/bzImage "$pkgdir/boot/vmlinuz-linux-jarvisos"
+
+    echo "  -> Installing modules..."
+    make INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 \
+         DEPMOD=/bin/true LOCALVERSION="$_localversion" modules_install
+
+    # pkgbase file lets mkinitcpio identify this kernel by name
+    echo "$pkgbase" | install -Dm644 /dev/stdin "$modulesdir/pkgbase"
+
+    # Remove host-path symlinks; linux-jarvisos-headers provides the build/ dir
+    rm -f "$modulesdir"/{source,build}
+
+    echo "  -> Installing mkinitcpio preset..."
+    install -Dm644 /dev/stdin "$pkgdir/etc/mkinitcpio.d/linux-jarvisos.preset" << EOF
+# mkinitcpio preset for linux-jarvisos
+# JARVIS OS — custom kernel with AI/system integration drivers
+#
+# The live ISO uses the archiso/memdisk hooks (set in /etc/mkinitcpio.conf).
+# Calamares rewrites mkinitcpio.conf on the installed system to remove them.
+ALL_config="/etc/mkinitcpio.conf"
+ALL_kver="/boot/vmlinuz-linux-jarvisos"
+
+PRESETS=('default' 'fallback')
+
+default_image="/boot/initramfs-linux-jarvisos.img"
+
+fallback_image="/boot/initramfs-linux-jarvisos-fallback.img"
+fallback_options="-S autodetect"
+EOF
+}
+
+package_linux-jarvisos-headers() {
+    pkgdesc='Headers and scripts for building modules against linux-jarvisos'
+    depends=(pahole)
+    provides=("linux-headers=${pkgver}")
+
+    cd "$_ksrc"
+
+    local kernelrelease
+    kernelrelease=$(make -s kernelrelease LOCALVERSION="$_localversion")
+    local builddir="$pkgdir/usr/lib/modules/$kernelrelease/build"
+
+    echo "  -> Installing kernel build infrastructure..."
+    # install-extmod-build uses set -eu and references CC, HOSTCC, MAKE, SRCARCH, srctree.
+    # All must be set explicitly; the script is not sourced from the kernel Makefile here.
+    local _cc="${CC:-gcc}"
+    local _hostcc="${HOSTCC:-gcc}"
+    srctree="$_ksrc" SRCARCH="x86" \
+        CC="$_cc" HOSTCC="$_hostcc" MAKE="make" \
+        "$_ksrc/scripts/package/install-extmod-build" "$builddir"
+
+    echo "  -> Installing System.map and .config..."
+    install -Dm644 System.map "$builddir/System.map"
+    install -Dm644 .config    "$builddir/.config"
+
+    echo "  -> Installing JARVIS/DIBS driver headers..."
+    if [[ -d drivers/jarvis ]]; then
+        install -Dt "$builddir/drivers/jarvis" -m644 drivers/jarvis/*.h
+    fi
+    if [[ -d drivers/dibs ]]; then
+        install -Dt "$builddir/drivers/dibs" -m644 drivers/dibs/*.h 2>/dev/null || true
+    fi
+
+    echo "  -> Installing JARVIS UAPI header..."
+    install -Dt "$builddir/include/uapi/linux" -m644 \
+        include/uapi/linux/jarvis.h 2>/dev/null || true
+
+    echo "  -> Cleaning loose objects..."
+    find "$builddir" -type f -name '*.o' -delete
+
+    echo "  -> Adding /usr/src symlink..."
+    mkdir -p "$pkgdir/usr/src"
+    ln -sr "$builddir" "$pkgdir/usr/src/$pkgbase"
+}

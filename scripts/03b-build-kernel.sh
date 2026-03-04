@@ -1,22 +1,23 @@
 #!/bin/bash
-# Step 3b: Build linux-jarvisos custom kernel
+# Step 3b: Build linux-jarvisos custom kernel packages
 #
-# Compiles the JARVIS-integrated Linux kernel (7.0.0-rc2) from the linux/
-# source tree and installs it into the rootfs alongside the stock Arch linux
-# kernel.
+# Builds the JARVIS-integrated Linux kernel (7.0.0-rc2) from the linux/
+# submodule using the PKGBUILD at packages/linux-jarvisos/PKGBUILD, producing
+# two pacman packages:
 #
-# Design:
-#   - Stock linux kernel (from step 3) stays for maximum live boot hardware compat.
-#   - linux-jarvisos kernel (from this step) is what Calamares installs on the
-#     target system — it carries the JARVIS AI kernel drivers (jarvis.ko etc.).
-#   - Both kernels live in the same rootfs / squashfs.
+#   linux-jarvisos         — kernel image + modules
+#   linux-jarvisos-headers — build headers for out-of-tree modules
+#
+# Both packages are installed into the rootfs alongside the stock Arch linux
+# kernel.  The stock kernel (from step 3) handles live boot hardware compat;
+# linux-jarvisos is what Calamares installs on the target system.
 #
 # Prerequisites: step 2 (rootfs extracted) + step 3 (packages + mkinitcpio.conf)
 #
 # Host build tools required:
-#   Arch:         sudo pacman -S base-devel bc flex bison openssl libelf pahole
+#   Arch:          sudo pacman -S base-devel bc flex bison openssl libelf pahole
 #   Ubuntu/Debian: sudo apt-get install build-essential bc flex bison \
-#                     libssl-dev libelf-dev dwarves
+#                      libssl-dev libelf-dev dwarves
 
 set -e
 
@@ -35,6 +36,8 @@ BUILD_DIR="${PROJECT_ROOT}${BUILD_DIR}"
 SQUASHFS_ROOTFS="${BUILD_DIR}/iso-rootfs"
 KERNEL_SRC="${PROJECT_ROOT}/linux"
 KERNEL_BACKUP_DIR="${BUILD_DIR}/kernel-files"
+PKGBUILD_DIR="${PROJECT_ROOT}/packages/linux-jarvisos"
+PKG_DEST="${BUILD_DIR}/kernel-pkg"
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -48,10 +51,12 @@ LOCALVERSION="-jarvisos"
 NCPU=$(nproc)
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Step 3b: Building linux-jarvisos custom kernel${NC}"
+echo -e "${BLUE}Step 3b: Building linux-jarvisos kernel packages${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}Kernel source : ${KERNEL_SRC}${NC}"
 echo -e "${BLUE}Rootfs        : ${SQUASHFS_ROOTFS}${NC}"
+echo -e "${BLUE}PKGBUILD      : ${PKGBUILD_DIR}${NC}"
+echo -e "${BLUE}Package dest  : ${PKG_DEST}${NC}"
 echo -e "${BLUE}Build threads : ${NCPU}${NC}"
 echo -e "${YELLOW}NOTE: Initial kernel compilation takes 20–60 minutes.${NC}"
 echo -e "${YELLOW}      Install ccache for much faster incremental rebuilds.${NC}"
@@ -68,6 +73,12 @@ if [ ! -f "${KERNEL_SRC}/Makefile" ]; then
     exit 1
 fi
 
+# PKGBUILD must be present
+if [ ! -f "${PKGBUILD_DIR}/PKGBUILD" ]; then
+    echo -e "${RED}FATAL: PKGBUILD not found at ${PKGBUILD_DIR}/PKGBUILD${NC}" >&2
+    exit 1
+fi
+
 # Step 3 (rootfs) must be done first
 if [ ! -d "${SQUASHFS_ROOTFS}" ] || [ -z "$(ls -A "${SQUASHFS_ROOTFS}" 2>/dev/null)" ]; then
     echo -e "${RED}FATAL: Rootfs not found. Run step 3 first.${NC}" >&2
@@ -77,6 +88,13 @@ fi
 # mkinitcpio must be installed in rootfs (placed there by step 3)
 if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" which mkinitcpio &>/dev/null; then
     echo -e "${RED}FATAL: mkinitcpio not found in rootfs. Run step 3 first.${NC}" >&2
+    exit 1
+fi
+
+# makepkg must be installed on the host
+if ! command -v makepkg &>/dev/null; then
+    echo -e "${RED}FATAL: makepkg not found. Install base-devel:${NC}" >&2
+    echo -e "${YELLOW}  sudo pacman -S base-devel${NC}" >&2
     exit 1
 fi
 
@@ -123,180 +141,65 @@ fi
 
 # ── Kernel version info ───────────────────────────────────────────────────────
 cd "${KERNEL_SRC}"
-KERNEL_VERSION=$(make -s kernelversion 2>/dev/null || echo "unknown")
-KERNELRELEASE="${KERNEL_VERSION}${LOCALVERSION}"
+KERNELRELEASE=$(make -s kernelrelease LOCALVERSION="${LOCALVERSION}")
 echo -e "${BLUE}Kernel release: ${KERNELRELEASE}${NC}"
 echo ""
 
-# ── Configure kernel ──────────────────────────────────────────────────────────
+# ── Build packages with makepkg ───────────────────────────────────────────────
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Configuring linux-jarvisos...${NC}"
-
-if [ -f ".config" ]; then
-    echo -e "${BLUE}Existing .config found — updating with olddefconfig...${NC}"
-    make olddefconfig LOCALVERSION="${LOCALVERSION}"
-else
-    echo -e "${BLUE}Generating baseline config from x86_64_defconfig...${NC}"
-    make x86_64_defconfig LOCALVERSION="${LOCALVERSION}"
-fi
-
-# Apply JARVIS-specific options via scripts/config
-echo -e "${BLUE}Applying JARVIS kernel options...${NC}"
-
-# ------------------------------------------------------------------
-# Core requirements for the JARVIS driver
-# ------------------------------------------------------------------
-scripts/config --enable  CONFIG_MISC_DEVICES        # JARVIS core uses misc device
-scripts/config --enable  CONFIG_SYSFS               # sysfs attributes
-scripts/config --enable  CONFIG_KEYS                # kernel keyring (JARVIS_KEYS)
-scripts/config --enable  CONFIG_THERMAL             # thermal zones (JARVIS_SYSMON)
-scripts/config --enable  CONFIG_THERMAL_HWMON       # hwmon thermal reporting
-
-# ------------------------------------------------------------------
-# JARVIS driver and sub-modules
-# ------------------------------------------------------------------
-scripts/config --module  CONFIG_JARVIS              # jarvis.ko (loadable module)
-scripts/config --enable  CONFIG_JARVIS_SYSMON       # CPU/mem/thermal metrics
-scripts/config --enable  CONFIG_JARVIS_POLICY       # AI action security policy engine
-scripts/config --enable  CONFIG_JARVIS_KEYS         # Kernel keyring API-key storage
-
-# DIBS zero-copy integration (optional — depends on DIBS driver in tree)
-if grep -q "config DIBS" "${KERNEL_SRC}/drivers/dibs/Kconfig" 2>/dev/null; then
-    scripts/config --module CONFIG_DIBS
-    scripts/config --enable CONFIG_JARVIS_DIBS
-    echo -e "${GREEN}  ✓ DIBS zero-copy integration enabled${NC}"
-else
-    scripts/config --disable CONFIG_JARVIS_DIBS
-    echo -e "${YELLOW}  ⚠ DIBS not found — CONFIG_JARVIS_DIBS disabled${NC}"
-fi
-
-# ------------------------------------------------------------------
-# Security & audit (needed by ELEVATED/DANGEROUS policy tiers)
-# ------------------------------------------------------------------
-scripts/config --enable  CONFIG_SECURITY
-scripts/config --enable  CONFIG_AUDIT
-
-# ------------------------------------------------------------------
-# Networking (required by systemd and the OS in general)
-# ------------------------------------------------------------------
-scripts/config --enable  CONFIG_NET
-scripts/config --enable  CONFIG_INET
-scripts/config --enable  CONFIG_UNIX
-scripts/config --enable  CONFIG_IPV6
-
-# ------------------------------------------------------------------
-# Live boot / squashfs (CRITICAL for archiso live boot hook)
-# ------------------------------------------------------------------
-scripts/config --enable  CONFIG_SQUASHFS
-scripts/config --enable  CONFIG_SQUASHFS_ZSTD       # zstd-compressed squashfs
-scripts/config --enable  CONFIG_OVERLAY_FS           # overlayfs for live boot
-
-# ------------------------------------------------------------------
-# USB boot support (needed for live USB)
-# ------------------------------------------------------------------
-scripts/config --enable  CONFIG_USB_SUPPORT
-scripts/config --enable  CONFIG_USB_XHCI_HCD
-scripts/config --enable  CONFIG_USB_EHCI_HCD
-scripts/config --enable  CONFIG_USB_STORAGE
-scripts/config --enable  CONFIG_USB_UAS
-
-# ------------------------------------------------------------------
-# Storage (SATA, NVMe)
-# ------------------------------------------------------------------
-scripts/config --enable  CONFIG_ATA
-scripts/config --enable  CONFIG_SATA_AHCI
-scripts/config --enable  CONFIG_BLK_DEV_NVME
-
-# ------------------------------------------------------------------
-# Filesystems (needed for installer target)
-# ------------------------------------------------------------------
-scripts/config --enable  CONFIG_EXT4_FS
-scripts/config --enable  CONFIG_VFAT_FS
-scripts/config --enable  CONFIG_BTRFS_FS
-
-# Resolve any new symbols introduced by the options above
-make olddefconfig LOCALVERSION="${LOCALVERSION}"
-
-echo -e "${GREEN}✓ Kernel configured with JARVIS options${NC}"
+echo -e "${BLUE}Building linux-jarvisos + linux-jarvisos-headers with makepkg...${NC}"
+echo -e "${BLUE}(PKGBUILD handles configure, compile, and packaging)${NC}"
 echo ""
 
-# ── Compile kernel ────────────────────────────────────────────────────────────
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Compiling kernel (${NCPU} threads)...${NC}"
-echo -e "${YELLOW}Time estimate: 20–60 min (first build). Grab a coffee.${NC}"
+mkdir -p "${PKG_DEST}"
+
+# Export env vars consumed by the PKGBUILD
+export KERNEL_SRC
+export MAKEFLAGS="-j${NCPU}"
+
+cd "${PKGBUILD_DIR}"
+PKGDEST="${PKG_DEST}" makepkg --nodeps --nocheck --skipinteg --force
+
 echo ""
+echo -e "${GREEN}✓ Packages built successfully${NC}"
 
-make -j"${NCPU}" LOCALVERSION="${LOCALVERSION}" bzImage modules
+# Locate the produced packages
+PKG_LINUX=$(ls "${PKG_DEST}"/linux-jarvisos-[0-9]*.pkg.tar.zst 2>/dev/null | head -1)
+PKG_HEADERS=$(ls "${PKG_DEST}"/linux-jarvisos-headers-*.pkg.tar.zst 2>/dev/null | head -1)
 
-echo ""
-echo -e "${GREEN}✓ Kernel compilation complete${NC}"
-
-# ── Install kernel + modules into rootfs ──────────────────────────────────────
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Installing into rootfs...${NC}"
-
-# Temp staging dir for modules (keeps host /lib/modules clean)
-STAGING_DIR=$(mktemp -d)
-trap 'rm -rf "${STAGING_DIR}"' EXIT
-
-# Install modules to staging area
-echo -e "${BLUE}Installing kernel modules to staging dir...${NC}"
-make modules_install \
-    LOCALVERSION="${LOCALVERSION}" \
-    INSTALL_MOD_PATH="${STAGING_DIR}" \
-    INSTALL_MOD_STRIP=1
-
-BZIMAGE="${KERNEL_SRC}/arch/x86/boot/bzImage"
-if [ ! -f "${BZIMAGE}" ]; then
-    echo -e "${RED}FATAL: bzImage not found at ${BZIMAGE}${NC}" >&2
+if [[ -z "${PKG_LINUX}" || -z "${PKG_HEADERS}" ]]; then
+    echo -e "${RED}FATAL: Expected package files not found in ${PKG_DEST}${NC}" >&2
+    ls -la "${PKG_DEST}/" || true
     exit 1
 fi
 
-# Install kernel image into rootfs
-echo -e "${BLUE}Installing vmlinuz-linux-jarvisos → /boot/vmlinuz-linux-jarvisos${NC}"
-sudo cp "${BZIMAGE}" "${SQUASHFS_ROOTFS}/boot/vmlinuz-linux-jarvisos"
-sudo chmod 644 "${SQUASHFS_ROOTFS}/boot/vmlinuz-linux-jarvisos"
+echo -e "${BLUE}  linux-jarvisos         : $(basename "${PKG_LINUX}")${NC}"
+echo -e "${BLUE}  linux-jarvisos-headers : $(basename "${PKG_HEADERS}")${NC}"
 
-# Sync modules into rootfs (strip dangling build/source symlinks pointing to host paths)
-MOD_DEST="${SQUASHFS_ROOTFS}/usr/lib/modules/${KERNELRELEASE}"
-echo -e "${BLUE}Syncing kernel modules → /usr/lib/modules/${KERNELRELEASE}${NC}"
-sudo mkdir -p "${MOD_DEST}"
-sudo rsync -a --delete \
-    "${STAGING_DIR}/lib/modules/${KERNELRELEASE}/" \
-    "${MOD_DEST}/"
+# ── Install packages into rootfs ──────────────────────────────────────────────
+echo ""
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}Installing packages into rootfs...${NC}"
 
-# Remove host-path symlinks (build/source point to the host build tree, useless in rootfs)
-sudo rm -f "${MOD_DEST}/build" "${MOD_DEST}/source"
+# Stage packages in rootfs /tmp for pacman
+sudo cp "${PKG_LINUX}" "${PKG_HEADERS}" "${SQUASHFS_ROOTFS}/tmp/"
 
-echo -e "${GREEN}✓ Kernel image installed: /boot/vmlinuz-linux-jarvisos${NC}"
-echo -e "${GREEN}✓ Modules installed: /usr/lib/modules/${KERNELRELEASE}${NC}"
+# Install via pacman in the chroot.
+# --noscriptlet: skip the .install hooks here; we run mkinitcpio explicitly
+# below so it uses the live-boot mkinitcpio.conf (archiso/memdisk hooks).
+sudo arch-chroot "${SQUASHFS_ROOTFS}" \
+    pacman -U --noconfirm --noscriptlet \
+    "/tmp/$(basename "${PKG_LINUX}")" \
+    "/tmp/$(basename "${PKG_HEADERS}")"
 
-# ── mkinitcpio preset ─────────────────────────────────────────────────────────
-echo -e "${BLUE}Creating mkinitcpio preset for linux-jarvisos...${NC}"
-sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/mkinitcpio.d"
+# Clean up staged packages from rootfs
+sudo rm -f "${SQUASHFS_ROOTFS}/tmp/linux-jarvisos"*.pkg.tar.zst
 
-sudo tee "${SQUASHFS_ROOTFS}/etc/mkinitcpio.d/linux-jarvisos.preset" > /dev/null << EOF
-# mkinitcpio preset file for 'linux-jarvisos'
-# JARVIS OS — custom kernel with AI/system integration drivers
-
-# System-wide mkinitcpio.conf is used for hook and module selection.
-# In the live environment this includes the archiso/memdisk hooks.
-# Calamares's initcpiocfg module rewrites mkinitcpio.conf on the
-# installed system to remove live-only hooks before regenerating.
-ALL_config="/etc/mkinitcpio.conf"
-ALL_kver="/boot/vmlinuz-linux-jarvisos"
-
-PRESETS=('default' 'fallback')
-
-default_image="/boot/initramfs-linux-jarvisos.img"
-
-fallback_image="/boot/initramfs-linux-jarvisos-fallback.img"
-fallback_options="-S autodetect"
-EOF
-
-echo -e "${GREEN}✓ Preset created: /etc/mkinitcpio.d/linux-jarvisos.preset${NC}"
+echo -e "${GREEN}✓ linux-jarvisos installed into rootfs via pacman${NC}"
+echo -e "${GREEN}✓ linux-jarvisos-headers installed into rootfs via pacman${NC}"
 
 # ── Generate initramfs ────────────────────────────────────────────────────────
+echo ""
 echo -e "${BLUE}Generating initramfs for linux-jarvisos...${NC}"
 echo -e "${BLUE}(Uses live-boot mkinitcpio.conf — includes archiso/memdisk hooks)${NC}"
 
@@ -354,10 +257,12 @@ echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━
 echo -e "${GREEN}Step 3b complete: linux-jarvisos built and installed${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}Kernel release : ${KERNELRELEASE}${NC}"
+echo -e "${BLUE}Packages       : linux-jarvisos, linux-jarvisos-headers${NC}"
 echo -e "${BLUE}Kernel image   : vmlinuz-linux-jarvisos (${KERNEL_SIZE})${NC}"
 echo -e "${BLUE}Initramfs      : initramfs-linux-jarvisos.img (${INITRAMFS_SIZE})${NC}"
 echo -e "${BLUE}Modules dir    : /usr/lib/modules/${KERNELRELEASE}${NC}"
 echo ""
+echo -e "${GREEN}✓ Packages installed in rootfs via pacman${NC}"
 echo -e "${GREEN}✓ Calamares will install linux-jarvisos onto the target system${NC}"
 echo -e "${GREEN}✓ Stock linux kernel remains for live boot hardware compatibility${NC}"
 echo ""
