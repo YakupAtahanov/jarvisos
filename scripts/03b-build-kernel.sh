@@ -146,22 +146,39 @@ echo -e "${BLUE}Kernel release: ${KERNELRELEASE}${NC}"
 echo ""
 
 # ── Build packages with makepkg ───────────────────────────────────────────────
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Building linux-jarvisos + linux-jarvisos-headers with makepkg...${NC}"
-echo -e "${BLUE}(PKGBUILD handles configure, compile, and packaging)${NC}"
-echo ""
-
 mkdir -p "${PKG_DEST}"
 
 # Export env vars consumed by the PKGBUILD
 export KERNEL_SRC
 export MAKEFLAGS="-j${NCPU}"
 
-cd "${PKGBUILD_DIR}"
-PKGDEST="${PKG_DEST}" makepkg --nodeps --nocheck --skipinteg --force
+# Allow skipping the kernel compilation when packages are already built.
+# Set SKIP_KERNEL_BUILD=1 to reuse existing packages in ${PKG_DEST} and jump
+# straight to the install + initramfs steps.
+EXISTING_PKG_LINUX=$(ls "${PKG_DEST}"/linux-jarvisos-[0-9]*.pkg.tar.zst 2>/dev/null | head -1)
+EXISTING_PKG_HEADERS=$(ls "${PKG_DEST}"/linux-jarvisos-headers-*.pkg.tar.zst 2>/dev/null | head -1)
 
-echo ""
-echo -e "${GREEN}✓ Packages built successfully${NC}"
+if [[ "${SKIP_KERNEL_BUILD:-0}" == "1" ]] \
+   && [[ -n "${EXISTING_PKG_LINUX}" ]] \
+   && [[ -n "${EXISTING_PKG_HEADERS}" ]]; then
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}SKIP_KERNEL_BUILD=1: Reusing pre-built packages (skipping makepkg)${NC}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}  linux-jarvisos         : $(basename "${EXISTING_PKG_LINUX}")${NC}"
+    echo -e "${BLUE}  linux-jarvisos-headers : $(basename "${EXISTING_PKG_HEADERS}")${NC}"
+    echo ""
+else
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}Building linux-jarvisos + linux-jarvisos-headers with makepkg...${NC}"
+    echo -e "${BLUE}(PKGBUILD handles configure, compile, and packaging)${NC}"
+    echo ""
+
+    cd "${PKGBUILD_DIR}"
+    PKGDEST="${PKG_DEST}" makepkg --nodeps --nocheck --skipinteg --force
+
+    echo ""
+    echo -e "${GREEN}✓ Packages built successfully${NC}"
+fi
 
 # Locate the produced packages
 PKG_LINUX=$(ls "${PKG_DEST}"/linux-jarvisos-[0-9]*.pkg.tar.zst 2>/dev/null | head -1)
