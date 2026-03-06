@@ -8,3 +8,6 @@
 [submodule "dmcp"]
 	path = dmcp
 	url = git@github.com:YakupAtahanov/dmcp.git
+[submodule "dispatch"]
+	path = dispatch
+	url = git@github.com:YakupAtahanov/dispatch.git
