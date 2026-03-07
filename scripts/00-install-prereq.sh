@@ -34,6 +34,8 @@ echo -e "${BLUE}Detected distribution: ${DISTRO}${NC}"
 # - wget: fallback downloader
 # - python3: for various build scripts
 # - libarchive: for bsdtar (used in some build operations)
+# - unzip: for extracting Vosk STT model ZIP during step 4
+# - rust/cargo: for building dmcp and dispatch Rust binaries (step 4)
 
 install_arch() {
     echo -e "${BLUE}Installing prerequisites for Arch Linux...${NC}"
@@ -49,6 +51,8 @@ install_arch() {
         wget \
         python \
         libarchive \
+        unzip \
+        rust \
         qemu-system-x86 \
         qemu-ui-gtk
     echo -e "${GREEN}✓ Arch Linux prerequisites installed${NC}"
@@ -69,6 +73,9 @@ install_fedora() {
         wget \
         python3 \
         libarchive \
+        unzip \
+        rust \
+        cargo \
         qemu-system-x86 \
         qemu-ui-gtk 2>/dev/null || \
     sudo dnf install -y \
@@ -83,7 +90,10 @@ install_fedora() {
         curl \
         wget \
         python3 \
-        libarchive
+        libarchive \
+        unzip \
+        rust \
+        cargo
     echo -e "${GREEN}✓ Fedora prerequisites installed${NC}"
 }
 
@@ -102,6 +112,9 @@ install_ubuntu() {
         wget \
         python3 \
         libarchive-tools \
+        unzip \
+        rustc \
+        cargo \
         qemu-system-x86 \
         qemu-utils 2>/dev/null || \
     sudo apt-get install -y \
@@ -115,7 +128,10 @@ install_ubuntu() {
         curl \
         wget \
         python3 \
-        libarchive-tools
+        libarchive-tools \
+        unzip \
+        rustc \
+        cargo
     echo -e "${GREEN}✓ Ubuntu/Debian prerequisites installed${NC}"
 }
 
@@ -132,7 +148,10 @@ install_opensuse() {
         curl \
         wget \
         python3 \
-        libarchive-devel
+        libarchive-devel \
+        unzip \
+        rust \
+        cargo
     echo -e "${GREEN}✓ openSUSE prerequisites installed${NC}"
 }
 
@@ -194,6 +213,8 @@ check_tool "fakeroot"     "fakeroot"
 check_tool "git"          "git"
 check_tool "curl"         "curl"
 check_tool "python3"      "python3"
+check_tool "unzip"        "unzip"
+check_tool "cargo"        "rust/cargo"
 
 if [ ${#MISSING_TOOLS[@]} -gt 0 ]; then
     echo ""

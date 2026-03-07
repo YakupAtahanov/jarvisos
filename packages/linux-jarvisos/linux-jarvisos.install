@@ -1,0 +1,11 @@
+post_install() {
+    echo ">>> Updating module dependencies for linux-jarvisos..."
+    depmod
+
+    echo ">>> Generating initramfs for linux-jarvisos..."
+    mkinitcpio -p linux-jarvisos
+}
+
+post_upgrade() {
+    post_install
+}

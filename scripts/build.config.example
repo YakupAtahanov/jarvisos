@@ -51,9 +51,9 @@ ISO_EXTRACT_DIR="/iso-extract"
 # ISO_FILE: Name of the source Arch Linux ISO file
 # This file should be placed in BUILD_DEPS_DIR
 # The script will look for: ${BUILD_DEPS_DIR}/${ISO_FILE}
-# Example: archlinux-2024.01.01-x86_64.iso
+# Example: archlinux-x86_64.iso
 # NOTE: Download the Arch Linux ISO and place it in build-deps/ directory
-ISO_FILE="archlinux-2025.11.01-x86_64.iso"
+ISO_FILE="archlinux-x86_64.iso"
 
 # JARVIS_ISO_FILE: Name pattern for the final JARVIS OS ISO file
 # This is used by booter.sh to boot the final ISO
@@ -90,14 +90,14 @@ BUILD_LOG_FILE="/build/build.log"
 #   BUILD_DIR="/build"
 #   BUILD_DEPS_DIR="/build-deps"
 #   ISO_EXTRACT_DIR="/iso-extract"
-#   ISO_FILE="archlinux-2024.01.01-x86_64.iso"
+#   ISO_FILE="archlinux-x86_64.iso"
 #   JARVIS_ISO_FILE="jarvisos-*-x86_64.iso"
 #
 # This would result in:
 #   - Scripts: /home/user/jarvisos/scripts/
 #   - Build dir: /home/user/jarvisos/build/
 #   - Dependencies: /home/user/jarvisos/build-deps/
-#   - ISO source: /home/user/jarvisos/build-deps/archlinux-2024.01.01-x86_64.iso
+#   - ISO source: /home/user/jarvisos/build-deps/archlinux-x86_64.iso
 #   - ISO extract: /home/user/jarvisos/build/iso-extract/
 #   - Rootfs: /home/user/jarvisos/build/iso-rootfs/
 #   - Final ISO: /home/user/jarvisos/build/jarvisos-YYYYMMDD-x86_64.iso
