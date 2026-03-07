@@ -198,19 +198,33 @@ echo ""
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}Installing packages into rootfs...${NC}"
 
-# Stage packages in rootfs /tmp for pacman
-sudo cp "${PKG_LINUX}" "${PKG_HEADERS}" "${SQUASHFS_ROOTFS}/tmp/"
+# Stage packages in rootfs /root (NOT /tmp — arch-chroot mounts a tmpfs on /tmp
+# which hides any files copied there from the host side).
+sudo cp "${PKG_LINUX}" "${PKG_HEADERS}" "${SQUASHFS_ROOTFS}/root/"
+
+# Temporarily disable CheckSpace — pacman can't determine the root mount point
+# inside a chroot that isn't a real mountpoint, causing a spurious "not enough
+# free disk space" error.
+if grep -q '^CheckSpace' "${SQUASHFS_ROOTFS}/etc/pacman.conf"; then
+    sudo sed -i 's/^CheckSpace/#CheckSpace/' "${SQUASHFS_ROOTFS}/etc/pacman.conf"
+    RESTORE_CHECKSPACE=1
+fi
 
 # Install via pacman in the chroot.
 # --noscriptlet: skip the .install hooks here; we run mkinitcpio explicitly
 # below so it uses the live-boot mkinitcpio.conf (archiso/memdisk hooks).
 sudo arch-chroot "${SQUASHFS_ROOTFS}" \
     pacman -U --noconfirm --noscriptlet \
-    "/tmp/$(basename "${PKG_LINUX}")" \
-    "/tmp/$(basename "${PKG_HEADERS}")"
+    "/root/$(basename "${PKG_LINUX}")" \
+    "/root/$(basename "${PKG_HEADERS}")"
+
+# Restore CheckSpace
+if [ "${RESTORE_CHECKSPACE:-0}" = "1" ]; then
+    sudo sed -i 's/^#CheckSpace/CheckSpace/' "${SQUASHFS_ROOTFS}/etc/pacman.conf"
+fi
 
 # Clean up staged packages from rootfs
-sudo rm -f "${SQUASHFS_ROOTFS}/tmp/linux-jarvisos"*.pkg.tar.zst
+sudo rm -f "${SQUASHFS_ROOTFS}/root/linux-jarvisos"*.pkg.tar.zst
 
 echo -e "${GREEN}✓ linux-jarvisos installed into rootfs via pacman${NC}"
 echo -e "${GREEN}✓ linux-jarvisos-headers installed into rootfs via pacman${NC}"
@@ -220,24 +234,16 @@ echo ""
 echo -e "${BLUE}Generating initramfs for linux-jarvisos...${NC}"
 echo -e "${BLUE}(Uses live-boot mkinitcpio.conf — includes archiso/memdisk hooks)${NC}"
 
-MKINITCPIO_OUT=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" mkinitcpio -p linux-jarvisos 2>&1)
-MKINITCPIO_EXIT=$?
+# mkinitcpio may exit non-zero for missing-firmware warnings even though the
+# images are generated successfully. Run it, show output, then verify by
+# checking that the output files actually exist.
+sudo arch-chroot "${SQUASHFS_ROOTFS}" mkinitcpio -p linux-jarvisos 2>&1 \
+    | tee /dev/stderr | tail -5 || true
 
-echo "${MKINITCPIO_OUT}" | tail -25
-
-if [ ${MKINITCPIO_EXIT} -ne 0 ]; then
-    echo -e "${RED}FATAL: mkinitcpio failed for linux-jarvisos preset${NC}" >&2
-    echo "${MKINITCPIO_OUT}"
-    echo ""
-    echo -e "${YELLOW}Boot directory contents:${NC}"
-    sudo ls -lah "${SQUASHFS_ROOTFS}/boot/" || true
-    echo -e "${YELLOW}Modules directory:${NC}"
-    sudo ls -la "${SQUASHFS_ROOTFS}/usr/lib/modules/" || true
-    exit 1
-fi
-
-# Verify generated images
+# Verify generated images (the real success criterion)
 INITRAMFS_MAIN="${SQUASHFS_ROOTFS}/boot/initramfs-linux-jarvisos.img"
+INITRAMFS_FB="${SQUASHFS_ROOTFS}/boot/initramfs-linux-jarvisos-fallback.img"
+
 if ! sudo test -f "${INITRAMFS_MAIN}"; then
     echo -e "${RED}FATAL: initramfs-linux-jarvisos.img was not created${NC}" >&2
     sudo ls -lah "${SQUASHFS_ROOTFS}/boot/" || true

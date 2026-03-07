@@ -208,26 +208,25 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
 # Step 7: Copy Project-JARVIS code
 echo -e "${BLUE}Copying Project-JARVIS code...${NC}"
 sudo cp -r "${PROJECT_JARVIS}/jarvis"/* "${SQUASHFS_ROOTFS}/usr/lib/jarvis/"
+# Explicitly copy dotfiles (glob * skips them)
+[ -f "${PROJECT_JARVIS}/jarvis/.env.example" ] && \
+    sudo cp "${PROJECT_JARVIS}/jarvis/.env.example" "${SQUASHFS_ROOTFS}/usr/lib/jarvis/.env.example"
 # Copy requirements.txt for venv installation
 sudo cp "${PROJECT_JARVIS}/requirements.txt" "${SQUASHFS_ROOTFS}/usr/lib/jarvis/requirements.txt"
 # Chown inside chroot (user exists there)
 sudo arch-chroot "${SQUASHFS_ROOTFS}" chown -R jarvis:jarvis /usr/lib/jarvis
 
-# Verify SuperMCP was copied correctly
-echo -e "${BLUE}Verifying SuperMCP installation...${NC}"
-if [ ! -d "${SQUASHFS_ROOTFS}/usr/lib/jarvis/SuperMCP" ]; then
-    echo -e "${RED}ERROR: SuperMCP directory not found after copy${NC}" >&2
-    echo -e "${YELLOW}Expected: ${SQUASHFS_ROOTFS}/usr/lib/jarvis/SuperMCP${NC}" >&2
+# Verify core jarvis module was copied correctly
+echo -e "${BLUE}Verifying JARVIS module installation...${NC}"
+if [ ! -f "${SQUASHFS_ROOTFS}/usr/lib/jarvis/main.py" ]; then
+    echo -e "${RED}ERROR: jarvis/main.py not found after copy${NC}" >&2
     exit 1
 fi
-
-if [ ! -f "${SQUASHFS_ROOTFS}/usr/lib/jarvis/SuperMCP/SuperMCP.py" ]; then
-    echo -e "${RED}ERROR: SuperMCP.py not found after copy${NC}" >&2
-    echo -e "${YELLOW}Expected: ${SQUASHFS_ROOTFS}/usr/lib/jarvis/SuperMCP/SuperMCP.py${NC}" >&2
+if [ ! -f "${SQUASHFS_ROOTFS}/usr/lib/jarvis/cli.py" ]; then
+    echo -e "${RED}ERROR: jarvis/cli.py not found after copy${NC}" >&2
     exit 1
 fi
-
-echo -e "${GREEN}✓ SuperMCP verified successfully${NC}"
+echo -e "${GREEN}✓ JARVIS module verified successfully${NC}"
 
 # ---- DMCP: build and install -----------------------------------------------
 # dmcp is a Rust binary (MCP server manager). We build it on the host for the
@@ -305,6 +304,42 @@ DMCP_SVC_EOF
     fi
 fi
 # ---- end DMCP ---------------------------------------------------------------
+
+# ---- DISPATCH: build and install --------------------------------------------
+# dispatch is a Rust binary (signal-driven task orchestrator for MCP servers).
+# Built on the host like dmcp.
+
+DISPATCH_DIR="${PROJECT_JARVIS}/dispatch"
+DISPATCH_BINARY_SRC="${DISPATCH_DIR}/target/release/dispatch"
+
+echo -e "${BLUE}Building dispatch (MCP task orchestrator)...${NC}"
+
+if [ ! -f "${DISPATCH_DIR}/Cargo.toml" ]; then
+    echo -e "${YELLOW}Warning: dispatch/Cargo.toml not found at ${DISPATCH_DIR} — skipping dispatch build${NC}"
+else
+    if ! command -v cargo &>/dev/null; then
+        echo -e "${YELLOW}Warning: cargo not found on host — skipping dispatch build.${NC}"
+        echo -e "${YELLOW}Install Rust (https://rustup.rs/) and re-run to include dispatch.${NC}"
+    else
+        (cd "${DISPATCH_DIR}" && cargo build --release 2>&1) || {
+            echo -e "${RED}ERROR: dispatch build failed${NC}" >&2
+            exit 1
+        }
+
+        if [ ! -f "${DISPATCH_BINARY_SRC}" ]; then
+            echo -e "${RED}ERROR: expected dispatch binary at ${DISPATCH_BINARY_SRC}${NC}" >&2
+            exit 1
+        fi
+
+        echo -e "${BLUE}Installing dispatch binary to rootfs...${NC}"
+        sudo cp "${DISPATCH_BINARY_SRC}" "${SQUASHFS_ROOTFS}/usr/bin/dispatch"
+        sudo chmod 755 "${SQUASHFS_ROOTFS}/usr/bin/dispatch"
+        sudo chown root:root "${SQUASHFS_ROOTFS}/usr/bin/dispatch"
+
+        echo -e "${GREEN}✓ dispatch installed (/usr/bin/dispatch)${NC}"
+    fi
+fi
+# ---- end DISPATCH -----------------------------------------------------------
 
 # Step 8: Install Python dependencies in virtual environment
 echo -e "${BLUE}Installing Python dependencies...${NC}"
@@ -394,152 +429,280 @@ EOF
 sudo chmod +x "${SQUASHFS_ROOTFS}/usr/bin/jarvis"
 sudo chown root:root "${SQUASHFS_ROOTFS}/usr/bin/jarvis"
 
-# Step 10: Install jarvis-daemon script (with venv support)
+# Step 10: Install jarvis-daemon script (venv-aware wrapper around jarvis run)
 echo -e "${BLUE}Installing jarvis-daemon...${NC}"
-# Create a wrapper that activates venv before running the daemon
 sudo tee "${SQUASHFS_ROOTFS}/usr/bin/jarvis-daemon" > /dev/null << 'EOF'
-#!/usr/bin/env python3
-"""
-JARVIS System Daemon
-Main entry point for JARVIS when running as a system service
-"""
+#!/bin/bash
+# JARVIS Daemon — activates the venv and runs the async event loop
+# (voice + socket + stdin). Used by jarvis.service / XDG autostart.
 
-import sys
-import os
-import signal
-import logging
-from pathlib import Path
+VENV_PATH="/var/lib/jarvis/venv"
+JARVIS_PATH="/usr/lib/jarvis"
 
-# Activate virtual environment if it exists
-VENV_PATH = Path("/var/lib/jarvis/venv")
-if VENV_PATH.exists():
-    venv_python = VENV_PATH / "bin" / "python3"
-    if venv_python.exists():
-        # Find the actual versioned site-packages directory (e.g., python3.12)
-        import glob
-        venv_site_pattern = str(VENV_PATH / "lib" / "python3*" / "site-packages")
-        venv_sites = glob.glob(venv_site_pattern)
-        for venv_site in venv_sites:
-            if Path(venv_site).exists():
-                sys.path.insert(0, venv_site)
+if [ -f "${VENV_PATH}/bin/activate" ]; then
+    source "${VENV_PATH}/bin/activate"
+else
+    echo "Warning: Virtual environment not found at ${VENV_PATH}" >&2
+fi
 
-# Add JARVIS to Python path
-# The jarvis module is at /usr/lib/jarvis/, so add /usr/lib to path
-sys.path.insert(0, '/usr/lib')
-
-from jarvis.main import Jarvis
-from jarvis.config import Config
-
-class JarvisDaemon:
-    def __init__(self):
-        self.jarvis = None
-        self.running = False
-        self.setup_logging()
-        
-    def setup_logging(self):
-        """Setup system logging"""
-        log_dir = Path(os.environ.get('JARVIS_LOG_DIR', '/var/log/jarvis'))
-        log_dir.mkdir(parents=True, exist_ok=True)
-        
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(log_dir / 'jarvis.log'),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger('jarvis-daemon')
-        
-    def signal_handler(self, signum, frame):
-        """Handle system signals"""
-        self.logger.info(f"Received signal {signum}, shutting down gracefully...")
-        self.running = False
-        if self.jarvis:
-            # JARVIS doesn't have a stop method, but we can set running to False
-            pass
-            
-    def setup_environment(self):
-        """Setup environment for system service"""
-        # Ensure required directories exist
-        for dir_name in ['JARVIS_DATA_DIR', 'JARVIS_MODELS_DIR', 'JARVIS_LOG_DIR']:
-            dir_path = Path(os.environ.get(dir_name))
-            dir_path.mkdir(parents=True, exist_ok=True)
-            
-        # Set default model paths if not configured
-        models_dir = Path(os.environ.get('JARVIS_MODELS_DIR', '/var/lib/jarvis/models'))
-        if not os.getenv('TTS_MODEL_ONNX'):
-            os.environ['TTS_MODEL_ONNX'] = str(models_dir / 'piper' / 'en_US-libritts_r-medium.onnx')
-        if not os.getenv('TTS_MODEL_JSON'):
-            os.environ['TTS_MODEL_JSON'] = str(models_dir / 'piper' / 'en_US-libritts_r-medium.onnx.json')
-        if not os.getenv('VOSK_MODEL_PATH'):
-            os.environ['VOSK_MODEL_PATH'] = str(models_dir / 'vosk-model-small-en-us-0.15')
-            
-    def run(self):
-        """Main daemon loop"""
-        self.logger.info("Starting JARVIS daemon...")
-        
-        # Setup signal handlers
-        signal.signal(signal.SIGTERM, self.signal_handler)
-        signal.signal(signal.SIGINT, self.signal_handler)
-        signal.signal(signal.SIGHUP, self.signal_handler)
-        
-        try:
-            # Setup environment
-            self.setup_environment()
-            
-            # Initialize JARVIS
-            self.logger.info("Initializing JARVIS...")
-            self.jarvis = Jarvis()
-            
-            self.running = True
-            self.logger.info("JARVIS daemon started successfully")
-            
-            # Start voice activation mode (listening for wake words)
-            self.jarvis.listen_with_activation()
-                        
-        except Exception as e:
-            self.logger.error(f"Fatal error starting JARVIS: {e}", exc_info=True)
-            return 1
-        finally:
-            self.logger.info("JARVIS daemon stopped")
-            
-        return 0
-
-if __name__ == '__main__':
-    daemon = JarvisDaemon()
-    sys.exit(daemon.run())
+export PYTHONPATH="/usr/lib:${PYTHONPATH}"
+cd "${JARVIS_PATH}"
+exec python -m jarvis.cli run "$@"
 EOF
 
 sudo chmod +x "${SQUASHFS_ROOTFS}/usr/bin/jarvis-daemon"
 sudo chown root:root "${SQUASHFS_ROOTFS}/usr/bin/jarvis-daemon"
 
-# Step 11: Install systemd service
+# Step 11: Install systemd service (patched for OS integration)
+# The upstream jarvis.service uses ProtectHome=yes and MemoryDenyWriteExecute=yes
+# which break audio access and onnxruntime respectively. We install a fixed copy.
 echo -e "${BLUE}Installing systemd service...${NC}"
-sudo cp "${PROJECT_JARVIS}/packaging/jarvis.service" "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/jarvis.service"
-sudo chown root:root "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/jarvis.service"
+sudo tee "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/jarvis.service" > /dev/null << 'JARVISSVC'
+[Unit]
+Description=JARVIS AI Voice Assistant
+Documentation=https://github.com/YakupAtahanov/Project-JARVIS
+After=network.target sound.target ollama.service
+Wants=network.target ollama.service
+
+[Service]
+Type=simple
+User=jarvis
+Group=jarvis
+SupplementaryGroups=audio
+WorkingDirectory=/usr/lib/jarvis
+RuntimeDirectory=jarvis
+RuntimeDirectoryMode=0775
+ExecStart=/usr/bin/jarvis-daemon
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+# Security settings (ProtectHome and MemoryDenyWriteExecute removed —
+# ProtectHome blocks PipeWire socket access, MemoryDenyWriteExecute breaks onnxruntime)
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/jarvis /var/log/jarvis /run/jarvis /tmp
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Environment
+Environment=JARVIS_CONFIG_DIR=/etc/jarvis
+Environment=JARVIS_DATA_DIR=/var/lib/jarvis
+Environment=JARVIS_INPUT_SOCKET=/run/jarvis/input.sock
+Environment=JARVIS_LOG_DIR=/var/log/jarvis
+Environment=JARVIS_MODELS_DIR=/var/lib/jarvis/models
+Environment=PYTHONPATH=/usr/lib/jarvis
+Environment=OLLAMA_HOST=127.0.0.1:11434
+Environment=XDG_RUNTIME_DIR=/run/user/0
+
+# Standard output/error
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jarvis
+
+[Install]
+WantedBy=multi-user.target
+JARVISSVC
+sudo chmod 644 "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/jarvis.service"
 
 # Step 12: Set up configuration
 echo -e "${BLUE}Setting up JARVIS configuration...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
-    # Copy config template
-    cp /usr/lib/jarvis/config.env.template /etc/jarvis/jarvis.conf.template
-    chown jarvis:jarvis /etc/jarvis/jarvis.conf.template
-    
-    # Create initial .env file from template (if it doesn't exist)
-    if [ ! -f /usr/lib/jarvis/.env ]; then
-        cp /usr/lib/jarvis/config.env.template /usr/lib/jarvis/.env
-        chown jarvis:jarvis /usr/lib/jarvis/.env
+    # Copy config template (source is .env.example)
+    if [ -f /usr/lib/jarvis/.env.example ]; then
+        cp /usr/lib/jarvis/.env.example /etc/jarvis/jarvis.conf.template
+        chown jarvis:jarvis /etc/jarvis/jarvis.conf.template
+
+        # Create initial .env file from template (if it doesn't exist)
+        if [ ! -f /usr/lib/jarvis/.env ]; then
+            cp /usr/lib/jarvis/.env.example /usr/lib/jarvis/.env
+            chown jarvis:jarvis /usr/lib/jarvis/.env
+        fi
+    else
+        echo 'Warning: .env.example not found, skipping config template setup'
     fi
 "
 
-# Step 13: Skip enabling services in arch-chroot (systemd not running)
+# Step 12b: Patch .env defaults for OS deployment
+echo -e "${BLUE}Patching .env defaults for OS deployment...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    ENV_FILE=/usr/lib/jarvis/.env
+    if [ -f \"\${ENV_FILE}\" ]; then
+        # Helper: set key=value (update if exists, append if not)
+        set_env() {
+            local key=\$1 val=\$2
+            if grep -q \"^\${key}=\" \"\${ENV_FILE}\"; then
+                sed -i \"s|^\${key}=.*|\${key}=\${val}|\" \"\${ENV_FILE}\"
+            else
+                echo \"\${key}=\${val}\" >> \"\${ENV_FILE}\"
+            fi
+        }
+        set_env LLM_AUTO_PULL         true
+        set_env LLM_MODEL             qwen3:4b
+        set_env VOSK_MODEL_PATH       /var/lib/jarvis/models/vosk/vosk-model-small-en-us-0.15
+        set_env TTS_MODEL_ONNX        /var/lib/jarvis/models/piper/en_US-amy-medium.onnx
+        set_env TTS_MODEL_JSON        /var/lib/jarvis/models/piper/en_US-amy-medium.onnx.json
+        set_env OUTPUT_MODE           voice
+        set_env CONTEXTOR_ENABLED     true
+        set_env DATA_CONSENT          true
+        chown jarvis:jarvis \"\${ENV_FILE}\"
+    fi
+"
+echo -e "${GREEN}✓ .env defaults patched${NC}"
+
+# Step 13: Download Vosk STT model
+echo -e "${BLUE}Downloading Vosk STT model...${NC}"
+VOSK_MODEL="vosk-model-small-en-us-0.15"
+VOSK_URL="https://alphacephei.com/vosk/models/${VOSK_MODEL}.zip"
+VOSK_DEST="${SQUASHFS_ROOTFS}/var/lib/jarvis/models/vosk"
+
+if [ -d "${VOSK_DEST}/${VOSK_MODEL}" ]; then
+    echo -e "${GREEN}✓ Vosk model already present${NC}"
+else
+    VOSK_TMP=$(mktemp -d)
+    if curl -fSL -o "${VOSK_TMP}/${VOSK_MODEL}.zip" "${VOSK_URL}"; then
+        sudo unzip -qo "${VOSK_TMP}/${VOSK_MODEL}.zip" -d "${VOSK_DEST}/"
+        sudo chown -R root:root "${VOSK_DEST}/${VOSK_MODEL}"
+        echo -e "${GREEN}✓ Vosk model downloaded${NC}"
+    else
+        echo -e "${YELLOW}Warning: Could not download Vosk model — STT won't work until manually installed${NC}"
+    fi
+    rm -rf "${VOSK_TMP}"
+fi
+
+# Step 14: Download Piper TTS model
+echo -e "${BLUE}Downloading Piper TTS model...${NC}"
+PIPER_MODEL="en_US-amy-medium"
+PIPER_BASE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium"
+PIPER_DEST="${SQUASHFS_ROOTFS}/var/lib/jarvis/models/piper"
+
+if [ -f "${PIPER_DEST}/${PIPER_MODEL}.onnx" ] && [ -f "${PIPER_DEST}/${PIPER_MODEL}.onnx.json" ]; then
+    echo -e "${GREEN}✓ Piper model already present${NC}"
+else
+    sudo mkdir -p "${PIPER_DEST}"
+    PIPER_OK=true
+    if ! sudo curl -fSL -o "${PIPER_DEST}/${PIPER_MODEL}.onnx" \
+        "${PIPER_BASE_URL}/${PIPER_MODEL}.onnx"; then
+        echo -e "${YELLOW}Warning: Could not download Piper ONNX model${NC}"
+        PIPER_OK=false
+    fi
+    if ! sudo curl -fSL -o "${PIPER_DEST}/${PIPER_MODEL}.onnx.json" \
+        "${PIPER_BASE_URL}/${PIPER_MODEL}.onnx.json"; then
+        echo -e "${YELLOW}Warning: Could not download Piper JSON config${NC}"
+        PIPER_OK=false
+    fi
+    if [ "${PIPER_OK}" = "true" ]; then
+        sudo chown -R root:root "${PIPER_DEST}"
+        echo -e "${GREEN}✓ Piper TTS model downloaded${NC}"
+    else
+        echo -e "${YELLOW}Warning: Piper model incomplete — TTS won't work until manually installed${NC}"
+    fi
+fi
+
+# Step 15: Create first-boot service for Ollama model pull
+echo -e "${BLUE}Creating first-boot service...${NC}"
+
+# First-boot script
+sudo tee "${SQUASHFS_ROOTFS}/usr/local/bin/jarvis-first-boot.sh" > /dev/null << 'FIRSTBOOT'
+#!/bin/bash
+# JARVIS first-boot setup — pulls the default LLM model via Ollama
+# Runs once after installation, then disables itself.
+
+set -e
+
+MARKER="/var/lib/jarvis/.setup-done"
+LOG="/var/log/jarvis/first-boot.log"
+mkdir -p /var/log/jarvis
+
+exec > >(tee -a "$LOG") 2>&1
+echo "=== JARVIS first-boot $(date) ==="
+
+if [ -f "$MARKER" ]; then
+    echo "Setup already completed, exiting."
+    exit 0
+fi
+
+# Read model from .env
+MODEL="qwen3:4b"
+if [ -f /usr/lib/jarvis/.env ]; then
+    ENV_MODEL=$(grep -E '^LLM_MODEL=' /usr/lib/jarvis/.env | cut -d= -f2-)
+    [ -n "$ENV_MODEL" ] && MODEL="$ENV_MODEL"
+fi
+
+# Wait for Ollama to be ready (it's started as a dependency)
+echo "Waiting for Ollama..."
+for i in $(seq 1 60); do
+    if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+        echo "Ollama is ready."
+        break
+    fi
+    sleep 2
+done
+
+# Pull the model
+echo "Pulling model: ${MODEL} ..."
+if ollama pull "$MODEL"; then
+    echo "Model pulled successfully."
+else
+    echo "Warning: Failed to pull model. Will retry on next boot."
+    exit 1
+fi
+
+# Mark setup as done
+touch "$MARKER"
+echo "First-boot setup complete."
+
+# Disable ourselves
+systemctl disable jarvis-setup.service 2>/dev/null || true
+FIRSTBOOT
+
+sudo chmod 755 "${SQUASHFS_ROOTFS}/usr/local/bin/jarvis-first-boot.sh"
+
+# First-boot systemd service
+sudo tee "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/jarvis-setup.service" > /dev/null << 'SETUPSVC'
+[Unit]
+Description=JARVIS First-Boot Setup (pull LLM model)
+After=network-online.target ollama.service
+Wants=network-online.target
+Requires=ollama.service
+ConditionPathExists=!/var/lib/jarvis/.setup-done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/jarvis-first-boot.sh
+RemainAfterExit=yes
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SETUPSVC
+
+sudo chmod 644 "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/jarvis-setup.service"
+echo -e "${GREEN}✓ First-boot service created${NC}"
+
+# Step 16: Skip enabling services in arch-chroot (systemd not running)
 # Services will be enabled by Calamares post-install scripts after actual OS installation
 echo -e "${BLUE}Systemd services installed - will be enabled after Calamares installation${NC}"
 
-# Create autostart script for Ollama in live environment
-echo -e "${BLUE}Creating Ollama autostart for live environment...${NC}"
+# Step 17: Create XDG autostart entries for live environment and installed system
+echo -e "${BLUE}Creating XDG autostart entries...${NC}"
 sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/xdg/autostart"
+
+# Ollama autostart (for live environment; installed system uses ollama.service)
 sudo tee "${SQUASHFS_ROOTFS}/etc/xdg/autostart/ollama.desktop" > /dev/null << 'EOF'
 [Desktop Entry]
 Type=Application
@@ -552,10 +715,27 @@ X-GNOME-Autostart-enabled=true
 Hidden=false
 NoDisplay=true
 EOF
-
 sudo chmod 644 "${SQUASHFS_ROOTFS}/etc/xdg/autostart/ollama.desktop"
 
-# Step 14: Cleanup package cache
+# JARVIS autostart — runs in the user session where PipeWire audio is available
+sudo tee "${SQUASHFS_ROOTFS}/etc/xdg/autostart/jarvis.desktop" > /dev/null << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=JARVIS AI Assistant
+Comment=Start JARVIS voice assistant
+Exec=/usr/bin/jarvis-daemon
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+Hidden=false
+NoDisplay=true
+X-KDE-autostart-phase=2
+EOF
+sudo chmod 644 "${SQUASHFS_ROOTFS}/etc/xdg/autostart/jarvis.desktop"
+
+echo -e "${GREEN}✓ XDG autostart entries created${NC}"
+
+# Step 18: Cleanup package cache
 echo -e "${BLUE}Cleaning up package cache...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Scc --noconfirm 2>/dev/null || true
 sudo arch-chroot "${SQUASHFS_ROOTFS}" sh -c "rm -rf /tmp/* /var/cache/pacman/pkg/*" 2>/dev/null || true
@@ -564,7 +744,11 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" sh -c "rm -rf /tmp/* /var/cache/pacman/pkg
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${GREEN}Step 4 complete: Project-JARVIS installed${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Note: Users will need to:${NC}"
-echo -e "${BLUE}  1. Pull an Ollama model: ollama pull <model_name>${NC}"
-echo -e "${BLUE}  2. Set the model: jarvis model -n '<model_name>'${NC}"
-echo -e "${BLUE}  3. Start the service: systemctl start jarvis${NC}"
+echo -e "${BLUE}Installed components:${NC}"
+echo -e "${BLUE}  - JARVIS code + venv (/usr/lib/jarvis, /var/lib/jarvis/venv)${NC}"
+echo -e "${BLUE}  - Ollama (/usr/local/bin/ollama + ollama.service)${NC}"
+echo -e "${BLUE}  - dmcp + dispatch (/usr/bin/dmcp, /usr/bin/dispatch)${NC}"
+echo -e "${BLUE}  - Vosk STT model (/var/lib/jarvis/models/vosk/)${NC}"
+echo -e "${BLUE}  - Piper TTS model (/var/lib/jarvis/models/piper/)${NC}"
+echo -e "${BLUE}  - First-boot service (jarvis-setup.service)${NC}"
+echo -e "${BLUE}  - XDG autostart (ollama.desktop, jarvis.desktop)${NC}"
