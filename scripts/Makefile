@@ -27,7 +27,7 @@ YELLOW := \033[1;33m
 BLUE := \033[0;34m
 NC := \033[0m
 
-.PHONY: help list status step0 step1 step2 step3 step4 step5 step6 step7 all prereq clean
+.PHONY: help list status step0 step1 step2 step3 step3b step4 step5 step6 step7 all rest prereq clean
 
 # Default target
 help:
@@ -38,13 +38,15 @@ help:
 	@echo "  $(GREEN)make step1$(NC)  - Extract source Arch Linux ISO"
 	@echo "  $(GREEN)make step2$(NC)  - Unsquash filesystem from ISO"
 	@echo "  $(GREEN)make step3$(NC)  - Install KDE Plasma Wayland + all packages"
+	@echo "  $(GREEN)make step3b$(NC) - Build linux-jarvisos custom kernel (JARVIS drivers)"
 	@echo "  $(GREEN)make step4$(NC)  - Install Project-JARVIS AI assistant"
 	@echo "  $(GREEN)make step5$(NC)  - Install Calamares graphical installer"
 	@echo "  $(GREEN)make step6$(NC)  - Rebuild SquashFS (compress rootfs)"
 	@echo "  $(GREEN)make step7$(NC)  - Rebuild bootable ISO"
 	@echo ""
 	@echo "Other targets:"
-	@echo "  $(GREEN)make all$(NC)    - Run all steps (1-7, requires prerequisites)"
+	@echo "  $(GREEN)make all$(NC)    - Run all steps (1-7 + 3b, requires prerequisites)"
+	@echo "  $(GREEN)make rest$(NC)   - Run remaining steps (skips already-completed ones)"
 	@echo "  $(GREEN)make status$(NC) - Show build status"
 	@echo "  $(GREEN)make list$(NC)   - List available scripts"
 	@echo "  $(GREEN)make clean$(NC)  - Clean build artifacts"
@@ -59,7 +61,7 @@ help:
 list:
 	@echo "$(BLUE)Available build scripts:$(NC)"
 	@for script in 00-install-prereq.sh 01-extract-iso.sh 02-unsquash-fs.sh 03-bake-wayland.sh \
-	               04-bake-jarvis.sh 05-bake-calamares.sh 06-squash-fs.sh \
+	               03b-build-kernel.sh 04-bake-jarvis.sh 05-bake-calamares.sh 06-squash-fs.sh \
 	               07-rebuild-iso.sh; do \
 		if [ -f "$(SCRIPTS_DIR)/$$script" ]; then \
 			echo "  $(GREEN)✓$(NC) $$script"; \
@@ -81,6 +83,12 @@ status:
 		echo "  $(GREEN)✓$(NC) Step 2: SquashFS extracted"; \
 	else \
 		echo "  $(RED)✗$(NC) Step 2: SquashFS not extracted"; \
+	fi
+	@if [ -f "$(BUILD_DIR)/kernel-files/vmlinuz-linux-jarvisos" ]; then \
+		SIZE=$$(du -h "$(BUILD_DIR)/kernel-files/vmlinuz-linux-jarvisos" 2>/dev/null | cut -f1); \
+		echo "  $(GREEN)✓$(NC) Step 3b: linux-jarvisos kernel built ($$SIZE)"; \
+	else \
+		echo "  $(RED)✗$(NC) Step 3b: linux-jarvisos kernel not yet built"; \
 	fi
 	@SQUASHFS=$$(find $(ISO_EXTRACT_DIR) -type f -iname "airootfs.sfs" 2>/dev/null | head -1); \
 	if [ -n "$$SQUASHFS" ]; then \
@@ -134,6 +142,16 @@ step3:
 	@bash $(SCRIPTS_DIR)/03-bake-wayland.sh $(BUILD_DIR)
 	@echo "$(GREEN)✓ Step 3 complete$(NC)"
 
+# Step 3b: Build linux-jarvisos custom kernel
+step3b:
+	@echo "$(BLUE)Step 3b: Building linux-jarvisos kernel...$(NC)"
+	@if [ ! -f "$(SCRIPTS_DIR)/03b-build-kernel.sh" ]; then \
+		echo "$(RED)Error: Script not found: 03b-build-kernel.sh$(NC)"; \
+		exit 1; \
+	fi
+	@bash $(SCRIPTS_DIR)/03b-build-kernel.sh
+	@echo "$(GREEN)✓ Step 3b complete$(NC)"
+
 # Step 4: Bake JARVIS
 step4:
 	@echo "$(BLUE)Step 4: Baking JARVIS...$(NC)"
@@ -175,11 +193,61 @@ step7:
 	@echo "$(GREEN)✓ Step 7 complete$(NC)"
 
 # Run all steps in sequence
-all: step1 step2 step3 step4 step5 step6 step7
+all: step1 step2 step3 step3b step4 step5 step6 step7
 	@echo ""
 	@echo "$(GREEN)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
 	@echo "$(GREEN)All build steps completed!$(NC)"
 	@echo "$(GREEN)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+
+# Run remaining steps — detects completed steps via marker files and skips them.
+# Markers: step1 → iso-extract/, step2 → iso-rootfs/, step3 → iso-rootfs/usr/share/xsessions/,
+# step3b → kernel-files/vmlinuz-linux-jarvisos, step4 → iso-rootfs/usr/bin/jarvis,
+# step5 → iso-rootfs/usr/bin/calamares, step6 → airootfs.sfs, step7 → jarvisos-*.iso
+rest:
+	@echo "$(BLUE)Detecting completed steps...$(NC)"
+	@SKIP1=0; SKIP2=0; SKIP3=0; SKIP3B=0; SKIP4=0; SKIP5=0; SKIP6=0; SKIP7=0; \
+	if [ -d "$(ISO_EXTRACT_DIR)" ] && [ -n "$$(ls -A $(ISO_EXTRACT_DIR) 2>/dev/null)" ]; then \
+		echo "  $(GREEN)✓$(NC) Step 1: already done (skipping)"; SKIP1=1; \
+	fi; \
+	if [ -d "$(BUILD_DIR)/iso-rootfs/usr/bin" ]; then \
+		echo "  $(GREEN)✓$(NC) Step 2: already done (skipping)"; SKIP2=1; \
+	fi; \
+	if [ -d "$(BUILD_DIR)/iso-rootfs/usr/share/xsessions" ]; then \
+		echo "  $(GREEN)✓$(NC) Step 3: already done (skipping)"; SKIP3=1; \
+	fi; \
+	if [ -f "$(BUILD_DIR)/kernel-files/vmlinuz-linux-jarvisos" ]; then \
+		echo "  $(GREEN)✓$(NC) Step 3b: already done (skipping)"; SKIP3B=1; \
+	fi; \
+	if [ -f "$(BUILD_DIR)/iso-rootfs/usr/bin/jarvis" ]; then \
+		echo "  $(GREEN)✓$(NC) Step 4: already done (skipping)"; SKIP4=1; \
+	fi; \
+	if [ -f "$(BUILD_DIR)/iso-rootfs/usr/bin/calamares" ]; then \
+		echo "  $(GREEN)✓$(NC) Step 5: already done (skipping)"; SKIP5=1; \
+	fi; \
+	if find $(ISO_EXTRACT_DIR) -type f -iname "airootfs.sfs" 2>/dev/null | grep -q .; then \
+		echo "  $(GREEN)✓$(NC) Step 6: already done (skipping)"; SKIP6=1; \
+	fi; \
+	if find $(BUILD_DIR) -name "jarvisos-*-x86_64.iso" -type f 2>/dev/null | grep -q .; then \
+		echo "  $(GREEN)✓$(NC) Step 7: already done (skipping)"; SKIP7=1; \
+	fi; \
+	echo ""; \
+	RAN=0; \
+	if [ $$SKIP1 -eq 0 ]; then echo "$(BLUE)Running step 1...$(NC)"; bash $(SCRIPTS_DIR)/01-extract-iso.sh $(ISO_FILE) $(BUILD_DIR) && RAN=1 || exit 1; fi; \
+	if [ $$SKIP2 -eq 0 ]; then echo "$(BLUE)Running step 2...$(NC)"; bash $(SCRIPTS_DIR)/02-unsquash-fs.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
+	if [ $$SKIP3 -eq 0 ]; then echo "$(BLUE)Running step 3...$(NC)"; bash $(SCRIPTS_DIR)/03-bake-wayland.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
+	if [ $$SKIP3B -eq 0 ]; then echo "$(BLUE)Running step 3b...$(NC)"; bash $(SCRIPTS_DIR)/03b-build-kernel.sh && RAN=1 || exit 1; fi; \
+	if [ $$SKIP4 -eq 0 ]; then echo "$(BLUE)Running step 4...$(NC)"; bash $(SCRIPTS_DIR)/04-bake-jarvis.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
+	if [ $$SKIP5 -eq 0 ]; then echo "$(BLUE)Running step 5...$(NC)"; bash $(SCRIPTS_DIR)/05-bake-calamares.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
+	if [ $$SKIP6 -eq 0 ]; then echo "$(BLUE)Running step 6...$(NC)"; bash $(SCRIPTS_DIR)/06-squash-fs.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
+	if [ $$SKIP7 -eq 0 ]; then echo "$(BLUE)Running step 7...$(NC)"; bash $(SCRIPTS_DIR)/07-rebuild-iso.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
+	if [ $$RAN -eq 0 ]; then \
+		echo "$(GREEN)All steps already completed! Nothing to do.$(NC)"; \
+	else \
+		echo ""; \
+		echo "$(GREEN)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"; \
+		echo "$(GREEN)Remaining steps completed!$(NC)"; \
+		echo "$(GREEN)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"; \
+	fi
 
 # Clean build artifacts
 clean:

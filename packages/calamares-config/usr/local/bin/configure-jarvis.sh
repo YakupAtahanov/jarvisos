@@ -1,17 +1,19 @@
 #!/bin/bash
 # Post-installation JARVIS configuration script
-# Configures voice features based on user selections
+# Called by Calamares shellprocess after OS installation.
+# Configures voice features, creates XDG autostart, removes live-ISO cruft.
 
 set -e
 
 JARVIS_ENV="/usr/lib/jarvis/.env"
-JARVIS_CONFIG_TEMPLATE="/etc/jarvis/jarvis.conf.template"
 
-# Function to update .env file
+# ---------------------------------------------------------------------------
+# Helper: update a key=value in .env (create if missing)
+# ---------------------------------------------------------------------------
 update_env() {
     local key=$1
     local value=$2
-    
+
     if [ -f "${JARVIS_ENV}" ]; then
         if grep -q "^${key}=" "${JARVIS_ENV}"; then
             sed -i "s|^${key}=.*|${key}=${value}|" "${JARVIS_ENV}"
@@ -23,55 +25,48 @@ update_env() {
     fi
 }
 
-# Check for voice selections from packagechooser
-# Calamares stores these in global storage as packagechooser_packagechooser
-# which is a comma-separated list of selected IDs
-
+# ---------------------------------------------------------------------------
+# Read Calamares voice selections
+# ---------------------------------------------------------------------------
 VOICE_OUTPUT=false
 VOICE_RECOGNITION=false
 
-# Try to read from Calamares global storage file if it exists
 if [ -f "/tmp/calamares-global-storage.yaml" ]; then
-    if grep -q "voice-output" "/tmp/calamares-global-storage.yaml"; then
-        VOICE_OUTPUT=true
-    fi
-    if grep -q "voice-recognition" "/tmp/calamares-global-storage.yaml"; then
-        VOICE_RECOGNITION=true
-    fi
+    grep -q "voice-output" "/tmp/calamares-global-storage.yaml" && VOICE_OUTPUT=true
+    grep -q "voice-recognition" "/tmp/calamares-global-storage.yaml" && VOICE_RECOGNITION=true
 fi
 
 echo "Configuring JARVIS..."
-echo "Voice Output: ${VOICE_OUTPUT}"
-echo "Voice Recognition: ${VOICE_RECOGNITION}"
+echo "  Voice Output: ${VOICE_OUTPUT}"
+echo "  Voice Recognition: ${VOICE_RECOGNITION}"
 
-# Configure voice output
+# ---------------------------------------------------------------------------
+# Apply voice settings
+# ---------------------------------------------------------------------------
 if [ "${VOICE_OUTPUT}" = "true" ]; then
     update_env "ENABLE_TTS" "True"
-    echo "✓ Voice output enabled"
+    update_env "OUTPUT_MODE" "voice"
 else
     update_env "ENABLE_TTS" "False"
-    echo "✗ Voice output disabled"
+    update_env "OUTPUT_MODE" "text"
 fi
 
-# Configure voice recognition
 if [ "${VOICE_RECOGNITION}" = "true" ]; then
     update_env "ENABLE_STT" "True"
     update_env "VOICE_ACTIVATION" "True"
-    echo "✓ Voice recognition enabled"
 else
     update_env "ENABLE_STT" "False"
     update_env "VOICE_ACTIVATION" "False"
-    echo "✗ Voice recognition disabled"
 fi
 
-# Set ownership
 chown jarvis:jarvis "${JARVIS_ENV}" 2>/dev/null || true
 
-# Remove the SDDM autologin configuration (it's only for live ISO)
+# ---------------------------------------------------------------------------
+# Remove live-ISO autologin
+# ---------------------------------------------------------------------------
 echo "Removing live ISO autologin configuration..."
 rm -f /etc/sddm.conf.d/autologin.conf 2>/dev/null || true
 
-# Create a clean SDDM configuration for installed system
 mkdir -p /etc/sddm.conf.d
 cat > /etc/sddm.conf.d/jarvisos.conf << 'SDDM_CONF'
 [General]
@@ -88,21 +83,32 @@ SessionCommand=/usr/share/sddm/scripts/Xsession
 SessionDir=/usr/share/xsessions
 SDDM_CONF
 
-echo "✓ JARVIS configuration complete"
-echo ""
-echo "Note: To complete JARVIS setup after first boot:"
-echo "  1. Pull an Ollama model: ollama pull llama2"
-echo "  2. Set the model: jarvis model -n 'llama2'"
-echo "  3. Start JARVIS: systemctl --user start jarvis"
-echo ""
-if [ "${VOICE_OUTPUT}" = "true" ]; then
-    echo "  4. Download TTS models: jarvis tts-download"
-fi
-if [ "${VOICE_RECOGNITION}" = "true" ]; then
-    echo "  5. Download STT models: jarvis stt-download"
+# ---------------------------------------------------------------------------
+# Ensure XDG autostart for JARVIS exists (should already be there from build)
+# ---------------------------------------------------------------------------
+mkdir -p /etc/xdg/autostart
+if [ ! -f /etc/xdg/autostart/jarvis.desktop ]; then
+    cat > /etc/xdg/autostart/jarvis.desktop << 'JDESKTOP'
+[Desktop Entry]
+Type=Application
+Name=JARVIS AI Assistant
+Comment=Start JARVIS voice assistant
+Exec=/usr/bin/jarvis-daemon
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+Hidden=false
+NoDisplay=true
+X-KDE-autostart-phase=2
+JDESKTOP
+    chmod 644 /etc/xdg/autostart/jarvis.desktop
 fi
 
+# If voice is completely disabled, hide the autostart
+if [ "${VOICE_OUTPUT}" = "false" ] && [ "${VOICE_RECOGNITION}" = "false" ]; then
+    # Keep the desktop file but hide it — user can re-enable via settings
+    sed -i 's/^Hidden=false/Hidden=true/' /etc/xdg/autostart/jarvis.desktop 2>/dev/null || true
+fi
+
+echo "JARVIS configuration complete."
 exit 0
-
-
-
