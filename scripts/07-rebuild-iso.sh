@@ -488,6 +488,17 @@ fix_efi_boot_structure() {
         echo -e "${GREEN}✓ Updated boot entry volume IDs${NC}"
     fi
     
+    # 3.6. Rebrand boot entries inside efiboot.img
+    if [ -d "${EFI_MOUNT}/loader/entries" ]; then
+        for ENTRY_FILE in "${EFI_MOUNT}/loader/entries"/*.conf; do
+            if [ -f "${ENTRY_FILE}" ]; then
+                sudo sed -i 's/Arch Linux install medium/JarvisOS/g' "${ENTRY_FILE}" 2>/dev/null || true
+                sudo sed -i 's/Arch Linux/JarvisOS/g' "${ENTRY_FILE}" 2>/dev/null || true
+            fi
+        done
+        echo -e "${GREEN}✓ Rebranded boot entries in efiboot.img${NC}"
+    fi
+
     # 4. Ensure BOOTx64.EFI exists
     if [ ! -f "${EFI_MOUNT}/EFI/BOOT/BOOTx64.EFI" ]; then
         # Try to copy from systemd-boot location
@@ -702,6 +713,36 @@ if [ ! -f "${BOOT_CAT:-boot/syslinux/boot.cat}" ] || [ "${ISOLINUX_BIN}" -nt "${
     # boot.cat will be created by xorriso, but we ensure the directory exists
     touch "${BOOT_CAT:-boot/syslinux/boot.cat}" 2>/dev/null || true
 fi
+
+# ============================================================================
+# BRANDING: Replace "Arch Linux" with "JarvisOS" in all boot menus
+# ============================================================================
+echo -e "${BLUE}Applying JarvisOS branding to boot menus...${NC}"
+
+# Rebrand UEFI systemd-boot entries
+if [ -d "loader/entries" ]; then
+    for entry in loader/entries/*.conf; do
+        if [ -f "${entry}" ]; then
+            sed -i 's/Arch Linux install medium/JarvisOS/g' "${entry}"
+            sed -i 's/Arch Linux/JarvisOS/g' "${entry}"
+        fi
+    done
+    echo -e "${GREEN}✓ Rebranded UEFI boot entries${NC}"
+fi
+
+# Rebrand syslinux BIOS boot menu
+if [ -f "boot/syslinux/archiso_head.cfg" ]; then
+    sed -i 's/MENU TITLE Arch Linux/MENU TITLE JarvisOS/' "boot/syslinux/archiso_head.cfg"
+    echo -e "${GREEN}✓ Rebranded syslinux menu title${NC}"
+fi
+for cfg in boot/syslinux/archiso_sys-linux.cfg boot/syslinux/archiso_pxe-linux.cfg; do
+    if [ -f "${cfg}" ]; then
+        sed -i 's/Arch Linux install medium/JarvisOS/g' "${cfg}"
+        sed -i 's/Arch Linux live medium/JarvisOS/g' "${cfg}"
+        sed -i 's/Arch Linux/JarvisOS/g' "${cfg}"
+    fi
+done
+echo -e "${GREEN}✓ Rebranded syslinux boot entries${NC}"
 
 # CRITICAL FIX: Update boot entry paths to match actual file locations
 echo -e "${BLUE}Fixing boot entry paths...${NC}"

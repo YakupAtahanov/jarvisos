@@ -843,6 +843,21 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
 
     # Set hostname
     echo 'jarvisos' > /etc/hostname
+
+    # Brand as JarvisOS (override Arch Linux defaults)
+    cat > /etc/os-release << 'OSREOF'
+NAME=\"JarvisOS\"
+PRETTY_NAME=\"JarvisOS\"
+ID=jarvisos
+ID_LIKE=arch
+BUILD_ID=rolling
+ANSI_COLOR=\"38;2;23;147;209\"
+HOME_URL=\"https://github.com/jarvisos\"
+LOGO=jarvisos
+OSREOF
+
+    # Console login banner
+    echo 'Welcome to JarvisOS \\r (\\l)' > /etc/issue
     cat > /etc/hosts << 'HOSTSEOF'
 127.0.0.1   localhost
 ::1         localhost
