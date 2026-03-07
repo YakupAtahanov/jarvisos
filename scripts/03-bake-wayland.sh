@@ -75,9 +75,6 @@ _write_fallback_mirrors() {
 # JARVIS OS build mirrorlist — curated 2026-03
 # Multiple geographically spread mirrors for resilience
 
-# Cloudflare (global CDN, usually fastest)
-Server = https://cloudflaremirrors.com/archlinux/$repo/os/$arch
-
 # Kernel.org (authoritative, highly reliable)
 Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch
 
@@ -90,9 +87,6 @@ Server = https://ftp.osuosl.org/pub/archlinux/$repo/os/$arch
 # Xtom (EU/global CDN)
 Server = https://mirror.xtom.com/archlinux/$repo/os/$arch
 
-# iSolutions (Germany)
-Server = https://mirror.isoc.org.il/pub/archlinux/$repo/os/$arch
-
 # Gwdg (Germany)
 Server = https://ftp.gwdg.de/pub/linux/archlinux/$repo/os/$arch
 
@@ -101,6 +95,9 @@ Server = https://mirror.dotsrc.org/archlinux/$repo/os/$arch
 
 # Aarnet (Australia, backup)
 Server = https://mirror.aarnet.edu.au/pub/archlinux/$repo/os/$arch
+
+# Cloudflare (CDN - last resort, has had intermittent SSL issues)
+Server = https://cloudflaremirrors.com/archlinux/$repo/os/$arch
 MIRROREOF
 }
 
