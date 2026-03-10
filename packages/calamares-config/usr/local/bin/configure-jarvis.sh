@@ -110,5 +110,45 @@ if [ "${VOICE_OUTPUT}" = "false" ] && [ "${VOICE_RECOGNITION}" = "false" ]; then
     sed -i 's/^Hidden=false/Hidden=true/' /etc/xdg/autostart/jarvis.desktop 2>/dev/null || true
 fi
 
+# ---------------------------------------------------------------------------
+# Create first-boot welcome terminal autostart
+# This opens a Konsole window on the user's first login after installation,
+# showing the JARVIS setup progress (model download, verification, usage tips).
+# The welcome script removes this autostart file after it runs once.
+# ---------------------------------------------------------------------------
+echo "Creating JARVIS welcome autostart..."
+
+# Detect the username Calamares created (from global storage or /home)
+INSTALL_USER=""
+if [ -f "/tmp/calamares-global-storage.yaml" ]; then
+    INSTALL_USER=$(grep -E '^\s*username:' /tmp/calamares-global-storage.yaml \
+                   | head -1 | sed 's/.*username:\s*//' | tr -d '"' | xargs)
+fi
+# Fallback: first real user in /home
+if [ -z "${INSTALL_USER}" ]; then
+    INSTALL_USER=$(ls /home/ 2>/dev/null | head -1)
+fi
+
+if [ -n "${INSTALL_USER}" ]; then
+    AUTOSTART_DIR="/home/${INSTALL_USER}/.config/autostart"
+    mkdir -p "${AUTOSTART_DIR}"
+    cat > "${AUTOSTART_DIR}/jarvis-welcome.desktop" << 'WELCOMEDESKTOP'
+[Desktop Entry]
+Type=Application
+Name=JARVIS Setup
+Comment=First-boot JARVIS AI setup wizard
+Exec=konsole -e /usr/local/bin/jarvis-welcome.sh
+Icon=utilities-terminal
+Terminal=false
+StartupNotify=true
+X-KDE-autostart-phase=2
+WELCOMEDESKTOP
+    chmod 644 "${AUTOSTART_DIR}/jarvis-welcome.desktop"
+    chown -R "${INSTALL_USER}:${INSTALL_USER}" "/home/${INSTALL_USER}/.config"
+    echo "  Welcome autostart created for user: ${INSTALL_USER}"
+else
+    echo "  Warning: Could not determine installed user — welcome autostart skipped"
+fi
+
 echo "JARVIS configuration complete."
 exit 0

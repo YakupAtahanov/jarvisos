@@ -735,6 +735,264 @@ sudo chmod 644 "${SQUASHFS_ROOTFS}/etc/xdg/autostart/jarvis.desktop"
 
 echo -e "${GREEN}✓ XDG autostart entries created${NC}"
 
+# Step 17b: Create JARVIS welcome/first-boot interactive setup script
+# This script opens in a terminal on first login after installation.
+# It gives the user a friendly onboarding experience: shows progress while
+# pulling the AI model, verifies everything works, and shows usage tips.
+# The jarvis-setup.service still runs as a systemd fallback, but they
+# coordinate via the same /var/lib/jarvis/.setup-done marker.
+echo -e "${BLUE}Creating JARVIS welcome script...${NC}"
+sudo tee "${SQUASHFS_ROOTFS}/usr/local/bin/jarvis-welcome.sh" > /dev/null << 'WELCOME_EOF'
+#!/bin/bash
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  JARVIS OS — First-Boot Welcome & Setup                        ║
+# ║  Opens in a terminal on first login after installation.         ║
+# ║  Pulls the AI model, verifies the stack, shows usage tips.     ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
+set -euo pipefail
+
+MARKER="/var/lib/jarvis/.setup-done"
+LOG="/var/log/jarvis/welcome.log"
+AUTOSTART_FILE="${HOME}/.config/autostart/jarvis-welcome.desktop"
+
+# Colours
+BOLD='\033[1m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+DIM='\033[2m'
+NC='\033[0m'
+
+# Logging (user sees stdout, we also tee to log)
+sudo mkdir -p /var/log/jarvis 2>/dev/null || true
+exec > >(tee -a "$LOG") 2>&1
+
+# ── Helpers ──────────────────────────────────────────────────────────
+banner() {
+    clear
+    echo ""
+    echo -e "${CYAN}${BOLD}"
+    echo "     ██╗ █████╗ ██████╗ ██╗   ██╗██╗███████╗"
+    echo "     ██║██╔══██╗██╔══██╗██║   ██║██║██╔════╝"
+    echo "     ██║███████║██████╔╝██║   ██║██║███████╗"
+    echo "██   ██║██╔══██║██╔══██╗╚██╗ ██╔╝██║╚════██║"
+    echo "╚█████╔╝██║  ██║██║  ██║ ╚████╔╝ ██║███████║"
+    echo " ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═╝  ╚═══╝  ╚═╝╚══════╝"
+    echo -e "${NC}"
+    echo -e "${BOLD}  Welcome to JARVIS OS${NC}"
+    echo -e "${DIM}  Your AI-powered operating system${NC}"
+    echo ""
+    echo -e "${DIM}  ─────────────────────────────────────────────${NC}"
+    echo ""
+}
+
+step() { echo -e "  ${CYAN}▸${NC} ${BOLD}$1${NC}"; }
+ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
+warn() { echo -e "  ${YELLOW}⚠${NC} $1"; }
+fail() { echo -e "  ${RED}✗${NC} $1"; }
+
+spinner() {
+    local pid=$1 msg=$2
+    local chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    local i=0
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r  ${CYAN}%s${NC} %s" "${chars:i%${#chars}:1}" "$msg"
+        sleep 0.1
+        i=$((i + 1))
+    done
+    printf "\r"
+}
+
+# ── Already done? ───────────────────────────────────────────────────
+if [ -f "$MARKER" ]; then
+    banner
+    echo -e "  ${GREEN}Setup already complete!${NC}"
+    echo ""
+    echo -e "  JARVIS is ready. You can:"
+    echo ""
+    echo -e "    ${BOLD}jarvis chat${NC}        — Chat with JARVIS in the terminal"
+    echo -e "    ${BOLD}jarvis ask \"...\"${NC}   — Ask a quick question"
+    echo -e "    ${BOLD}Hey, Jarvis${NC}        — Voice activation (if enabled)"
+    echo ""
+    # Remove the autostart so this doesn't open again
+    rm -f "$AUTOSTART_FILE" 2>/dev/null || true
+    echo -e "${DIM}  Press Enter to close...${NC}"
+    read -r
+    exit 0
+fi
+
+# ── Main setup ──────────────────────────────────────────────────────
+banner
+
+echo -e "  Setting up your AI assistant. This may take a few minutes"
+echo -e "  depending on your internet speed."
+echo ""
+
+# 1. Check internet connectivity
+step "Checking internet connectivity..."
+ONLINE=false
+for attempt in $(seq 1 30); do
+    if curl -sf --max-time 5 https://ollama.com >/dev/null 2>&1; then
+        ONLINE=true
+        break
+    fi
+    if [ $attempt -eq 1 ]; then
+        echo -e "    ${DIM}Waiting for network...${NC}"
+    fi
+    sleep 2
+done
+
+if [ "$ONLINE" = true ]; then
+    ok "Internet connected"
+else
+    warn "No internet connection detected"
+    echo -e "    ${DIM}JARVIS needs internet to download the AI model.${NC}"
+    echo -e "    ${DIM}Connect to WiFi and run: sudo /usr/local/bin/jarvis-welcome.sh${NC}"
+    echo ""
+    echo -e "${DIM}  Press Enter to close...${NC}"
+    read -r
+    exit 1
+fi
+
+# 2. Wait for Ollama
+step "Starting Ollama AI engine..."
+OLLAMA_READY=false
+for i in $(seq 1 60); do
+    if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+        OLLAMA_READY=true
+        break
+    fi
+    # Try starting Ollama if it's not running
+    if [ $i -eq 1 ]; then
+        if ! pgrep -x ollama >/dev/null 2>&1; then
+            nohup ollama serve >/dev/null 2>&1 &
+        fi
+    fi
+    sleep 2
+done
+
+if [ "$OLLAMA_READY" = true ]; then
+    ok "Ollama is running"
+else
+    fail "Ollama failed to start"
+    echo -e "    ${DIM}Try: ollama serve${NC}"
+    echo ""
+    echo -e "${DIM}  Press Enter to close...${NC}"
+    read -r
+    exit 1
+fi
+
+# 3. Read configured model
+MODEL="qwen3:4b"
+if [ -f /usr/lib/jarvis/.env ]; then
+    ENV_MODEL=$(grep -E '^LLM_MODEL=' /usr/lib/jarvis/.env | cut -d= -f2- || true)
+    [ -n "$ENV_MODEL" ] && MODEL="$ENV_MODEL"
+fi
+
+# 4. Check if model already downloaded
+step "Checking for AI model: ${MODEL}..."
+if ollama list 2>/dev/null | grep -q "${MODEL%%:*}"; then
+    ok "Model ${MODEL} already available"
+else
+    echo ""
+    echo -e "  ${CYAN}▸${NC} ${BOLD}Downloading AI model: ${MODEL}${NC}"
+    echo -e "    ${DIM}This is a one-time download (~2.5 GB)...${NC}"
+    echo ""
+
+    # Pull with visible progress
+    if ollama pull "$MODEL"; then
+        echo ""
+        ok "Model downloaded successfully"
+    else
+        echo ""
+        fail "Failed to download model"
+        echo -e "    ${DIM}Check your internet and try: ollama pull ${MODEL}${NC}"
+        echo ""
+        echo -e "${DIM}  Press Enter to close...${NC}"
+        read -r
+        exit 1
+    fi
+fi
+
+# 5. Quick verification
+step "Verifying JARVIS..."
+VERIFY_OK=true
+
+# Check JARVIS CLI
+if command -v jarvis >/dev/null 2>&1; then
+    ok "JARVIS CLI available"
+else
+    warn "JARVIS CLI not found in PATH"
+    VERIFY_OK=false
+fi
+
+# Check voice models
+if [ -d /var/lib/jarvis/models/vosk ] && [ -n "$(ls /var/lib/jarvis/models/vosk/ 2>/dev/null)" ]; then
+    ok "Voice recognition model installed"
+else
+    warn "Voice recognition model not found (voice commands disabled)"
+fi
+
+if [ -f /var/lib/jarvis/models/piper/en_US-amy-medium.onnx ]; then
+    ok "Text-to-speech model installed"
+else
+    warn "TTS model not found (voice output disabled)"
+fi
+
+# 6. Mark setup as done (coordinate with jarvis-setup.service)
+sudo touch "$MARKER" 2>/dev/null || touch "$MARKER" 2>/dev/null || true
+sudo systemctl disable jarvis-setup.service 2>/dev/null || true
+
+echo ""
+echo -e "  ${DIM}─────────────────────────────────────────────${NC}"
+echo ""
+echo -e "  ${GREEN}${BOLD}Setup complete! JARVIS is ready.${NC}"
+echo ""
+echo -e "  ${BOLD}How to use JARVIS:${NC}"
+echo ""
+echo -e "    ${BOLD}jarvis chat${NC}           Open an interactive chat session"
+echo -e "    ${BOLD}jarvis ask \"...\"${NC}      Ask a quick question"
+echo -e "    ${BOLD}jarvis voice${NC}          Switch to voice output mode"
+echo -e "    ${BOLD}jarvis text${NC}           Switch to text output mode"
+echo -e "    ${BOLD}jarvis model <name>${NC}   Change the AI model"
+echo ""
+echo -e "  ${DIM}Voice activation: Say \"Hey, Jarvis\" (if voice recognition enabled)${NC}"
+echo -e "  ${DIM}Find JARVIS in the application menu or search for \"JARVIS\"${NC}"
+echo ""
+
+# Remove autostart so this doesn't open again
+rm -f "$AUTOSTART_FILE" 2>/dev/null || true
+
+echo -e "${DIM}  Press Enter to launch JARVIS chat, or Ctrl+C to close...${NC}"
+if read -r -t 60; then
+    exec jarvis chat
+fi
+WELCOME_EOF
+
+sudo chmod 755 "${SQUASHFS_ROOTFS}/usr/local/bin/jarvis-welcome.sh"
+echo -e "${GREEN}✓ Welcome script created${NC}"
+
+# Step 17c: Create JARVIS desktop launcher (application menu entry)
+echo -e "${BLUE}Creating JARVIS desktop launcher...${NC}"
+sudo mkdir -p "${SQUASHFS_ROOTFS}/usr/share/applications"
+sudo tee "${SQUASHFS_ROOTFS}/usr/share/applications/jarvis.desktop" > /dev/null << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=JARVIS AI
+GenericName=AI Assistant
+Comment=Chat with your JARVIS AI assistant
+Exec=konsole -e jarvis chat
+Icon=utilities-terminal
+Terminal=false
+Categories=Utility;System;
+Keywords=jarvis;ai;assistant;chat;voice;
+StartupNotify=true
+EOF
+sudo chmod 644 "${SQUASHFS_ROOTFS}/usr/share/applications/jarvis.desktop"
+echo -e "${GREEN}✓ JARVIS desktop launcher created${NC}"
+
 # Step 18: Cleanup package cache
 echo -e "${BLUE}Cleaning up package cache...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Scc --noconfirm 2>/dev/null || true
@@ -751,4 +1009,6 @@ echo -e "${BLUE}  - dmcp + dispatch (/usr/bin/dmcp, /usr/bin/dispatch)${NC}"
 echo -e "${BLUE}  - Vosk STT model (/var/lib/jarvis/models/vosk/)${NC}"
 echo -e "${BLUE}  - Piper TTS model (/var/lib/jarvis/models/piper/)${NC}"
 echo -e "${BLUE}  - First-boot service (jarvis-setup.service)${NC}"
+echo -e "${BLUE}  - Welcome script (/usr/local/bin/jarvis-welcome.sh)${NC}"
+echo -e "${BLUE}  - Desktop launcher (jarvis.desktop in applications)${NC}"
 echo -e "${BLUE}  - XDG autostart (ollama.desktop, jarvis.desktop)${NC}"

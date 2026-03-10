@@ -744,6 +744,23 @@ for cfg in boot/syslinux/archiso_sys-linux.cfg boot/syslinux/archiso_pxe-linux.c
 done
 echo -e "${GREEN}✓ Rebranded syslinux boot entries${NC}"
 
+# CRITICAL FIX: Update syslinux boot parameters to use archisolabel
+# The original Arch ISO uses archisosearchuuid with a timestamp UUID.
+# When we rebuild the ISO with xorriso, it gets a NEW UUID, so the old one
+# no longer matches. This prevents archiso from finding & mounting the boot
+# device at /run/archiso/bootmnt/, which breaks Calamares unpackfs.
+# Fix: replace archisosearchuuid=<old> with archisolabel=<our-label>.
+echo -e "${BLUE}Fixing syslinux boot parameters (archisosearchuuid → archisolabel)...${NC}"
+for cfg in boot/syslinux/archiso_sys-linux.cfg boot/syslinux/archiso_pxe-linux.cfg; do
+    if [ -f "${cfg}" ]; then
+        # Replace archisosearchuuid=<anything> with archisolabel=JARVISOS_202601
+        sed -i "s/archisosearchuuid=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
+        # Also normalise any existing archisolabel to our volume ID
+        sed -i "s/archisolabel=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
+        echo -e "${GREEN}✓ Fixed $(basename "${cfg}")${NC}"
+    fi
+done
+
 # CRITICAL FIX: Update boot entry paths to match actual file locations
 echo -e "${BLUE}Fixing boot entry paths...${NC}"
 
