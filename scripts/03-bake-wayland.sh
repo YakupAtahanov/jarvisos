@@ -946,8 +946,11 @@ echo -e "${BLUE}Enabling services...${NC}"
 echo -e "${BLUE}Disabling conflicting network services...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable systemd-networkd.service 2>/dev/null || true
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable dhcpcd.service 2>/dev/null || true
-# Note: iwd is not installed, so no need to disable it
-# NetworkManager will use wpa_supplicant as the WiFi backend
+# Disable and mask iwd — it conflicts with wpa_supplicant (our chosen NM backend).
+# iwd gets pulled as an optional dep of networkmanager; if present and enabled it
+# enters a restart loop because wpa_supplicant already owns the WiFi hardware.
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable iwd.service 2>/dev/null || true
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl mask iwd.service 2>/dev/null || true
 
 # Enable systemd-resolved (required for NetworkManager DNS resolution)
 echo -e "${BLUE}Enabling systemd-resolved...${NC}"
