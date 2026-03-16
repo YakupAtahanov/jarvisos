@@ -19,7 +19,7 @@
 #   Ubuntu/Debian: sudo apt-get install build-essential bc flex bison \
 #                      libssl-dev libelf-dev dwarves
 
-set -e
+set -eo pipefail
 
 # Source config file and shared utilities
 source build.config
@@ -139,8 +139,25 @@ if command -v ccache &>/dev/null; then
     echo -e "${GREEN}✓ ccache enabled for faster incremental builds${NC}"
 fi
 
-# ── Kernel version info ───────────────────────────────────────────────────────
+# ── Ensure comprehensive kernel config ────────────────────────────────────────
+# If a previous build left a minimal .config (from x86_64_defconfig), remove it
+# so the PKGBUILD's prepare() will use /proc/config.gz instead.
+# x86_64_defconfig produces a kernel missing most hardware drivers, making the
+# ISO unbootable on real hardware.
 cd "${KERNEL_SRC}"
+
+if [ -f .config ]; then
+    CONFIG_COUNT=$(grep -c '^CONFIG_' .config 2>/dev/null || echo 0)
+    if [ "${CONFIG_COUNT}" -lt 5000 ]; then
+        echo -e "${YELLOW}Existing .config appears minimal (${CONFIG_COUNT} options)${NC}"
+        echo -e "${YELLOW}Removing it — PKGBUILD will use host kernel config for full hardware support${NC}"
+        rm -f .config
+    else
+        echo -e "${GREEN}✓ Existing .config looks comprehensive (${CONFIG_COUNT} options)${NC}"
+    fi
+fi
+
+# ── Kernel version info ───────────────────────────────────────────────────────
 KERNELRELEASE=$(make -s kernelrelease LOCALVERSION="${LOCALVERSION}")
 echo -e "${BLUE}Kernel release: ${KERNELRELEASE}${NC}"
 echo ""

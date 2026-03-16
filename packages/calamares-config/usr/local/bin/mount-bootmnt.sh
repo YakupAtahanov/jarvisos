@@ -78,11 +78,11 @@ done
 SFS="${BOOTMNT}/${BASEDIR}/x86_64/airootfs.sfs"
 if [ -f "${SFS}" ]; then
     echo "SUCCESS: ${SFS} is accessible"
+    exit 0
 else
-    echo "WARNING: ${SFS} not found after mount" >&2
+    echo "ERROR: ${SFS} not found after mount" >&2
     echo "Contents of ${BOOTMNT}:" >&2
     ls -la "${BOOTMNT}/" 2>&1 || true
     ls -la "${BOOTMNT}/${BASEDIR}/" 2>&1 || true
+    exit 1
 fi
-
-exit 0

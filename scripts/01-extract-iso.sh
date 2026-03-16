@@ -3,7 +3,7 @@
 # Usage: ./01-extract-iso.sh [iso_file] [build_dir]
 # Variables come from build.config
 
-set -e
+set -eo pipefail
 
 # Source config file and shared utilities
 source build.config
@@ -64,6 +64,43 @@ echo -e "${GREEN}Extraction complete${NC}"
 if [ ! -d "${ISO_EXTRACT_DIR}" ] || [ -z "$(ls -A "${ISO_EXTRACT_DIR}" 2>/dev/null)" ]; then
     echo -e "${RED}Error: Extraction failed - output directory is empty${NC}"
     exit 1
+fi
+
+# ============================================================================
+# Handle EFI boot image extracted by 7z
+# ============================================================================
+# 7z extracts El Torito boot images to [BOOT]/ directory:
+#   [BOOT]/1-Boot-NoEmul.img = BIOS boot image (isolinux)
+#   [BOOT]/2-Boot-NoEmul.img = EFI boot image (efiboot.img)
+# The EFI boot image is needed by 07-rebuild-iso.sh. Place it at the standard
+# location (EFI/archiso/efiboot.img) so later scripts can find it.
+BOOT_EXTRACT_DIR="${ISO_EXTRACT_DIR}/[BOOT]"
+if [ -d "${BOOT_EXTRACT_DIR}" ]; then
+    # Find the EFI boot image (usually the largest file, or #2)
+    EFI_BOOT_IMG="${BOOT_EXTRACT_DIR}/2-Boot-NoEmul.img"
+    if [ -f "${EFI_BOOT_IMG}" ]; then
+        EFI_TARGET_DIR="${ISO_EXTRACT_DIR}/EFI/archiso"
+        mkdir -p "${EFI_TARGET_DIR}"
+        cp "${EFI_BOOT_IMG}" "${EFI_TARGET_DIR}/efiboot.img"
+        EFI_SIZE=$(du -h "${EFI_TARGET_DIR}/efiboot.img" | cut -f1)
+        echo -e "${GREEN}✓ Placed EFI boot image at EFI/archiso/efiboot.img (${EFI_SIZE})${NC}"
+    else
+        echo -e "${YELLOW}Warning: EFI boot image not found in [BOOT]/ directory${NC}"
+    fi
+    # Remove the [BOOT] directory to avoid it being included in the rebuilt ISO
+    rm -rf "${BOOT_EXTRACT_DIR}"
+fi
+
+# ============================================================================
+# Detect and save source ISO's archisosearchuuid for later scripts
+# ============================================================================
+# The .uuid file in boot/ contains the original ISO's search UUID.
+# Save it so 07-rebuild-iso.sh can find and replace it in boot configs.
+SOURCE_UUID_FILE=$(find "${ISO_EXTRACT_DIR}/boot" -name "*.uuid" -type f 2>/dev/null | head -1)
+if [ -n "${SOURCE_UUID_FILE}" ]; then
+    SOURCE_UUID=$(basename "${SOURCE_UUID_FILE}" .uuid)
+    echo "${SOURCE_UUID}" > "${BUILD_DIR}/.source-iso-uuid"
+    echo -e "${GREEN}✓ Source ISO UUID: ${SOURCE_UUID}${NC}"
 fi
 
 # Show extracted structure

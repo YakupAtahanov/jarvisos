@@ -2,7 +2,7 @@
 # Step 5: Bake in Calamares Installer
 # Installs Calamares from chaotic-aur and our calamares-config package
 
-set -e
+set -eo pipefail
 
 # Source config file and shared utilities
 source build.config
@@ -83,7 +83,18 @@ cleanup() {
 # Trap to ensure cleanup on exit
 trap cleanup EXIT
 
-# Step 3: Add chaotic-aur repository
+# Step 3a: Install bootloader packages required by Calamares bootloader module
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}Installing bootloader packages (grub + efibootmgr)...${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed grub efibootmgr || {
+    echo -e "${RED}Error: Failed to install grub and efibootmgr${NC}" >&2
+    exit 1
+}
+echo -e "${GREEN}✓ grub and efibootmgr installed${NC}"
+
+# Step 3b: Add chaotic-aur repository
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}Adding chaotic-aur repository...${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -323,7 +334,7 @@ if [ "${CALAMARES_INSTALLED}" != "true" ]; then
                 CALAMARES_INSTALLED=true
             else
                 # Package is installed, find the binary
-                CALAMARES_BIN=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" find /usr -name calamares -type f 2>/dev/null | head -1)
+                CALAMARES_BIN=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" find /usr -name calamares -type f 2>/dev/null | head -1) || true
                 if [ -n "${CALAMARES_BIN}" ]; then
                     echo -e "${GREEN}Found Calamares binary at: ${CALAMARES_BIN}${NC}"
                     CALAMARES_INSTALLED=true
@@ -353,7 +364,7 @@ elif sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Q calamares >/dev/null 2>&1 |
      sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Q calamares-git >/dev/null 2>&1 || \
      sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Q calamares-git-debug >/dev/null 2>&1; then
     # Package is installed, find the binary
-    CALAMARES_BIN=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" find /usr -name calamares -type f 2>/dev/null | head -1)
+    CALAMARES_BIN=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" find /usr -name calamares -type f 2>/dev/null | head -1) || true
     if [ -n "${CALAMARES_BIN}" ]; then
         echo -e "${GREEN}Found Calamares binary at: ${CALAMARES_BIN}${NC}"
         CALAMARES_FOUND=true
@@ -376,7 +387,7 @@ if [ "${CALAMARES_FOUND}" != "true" ]; then
     exit 1
 fi
 
-CALAMARES_VERSION=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" calamares --version 2>&1 | head -1)
+CALAMARES_VERSION=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" calamares --version 2>&1 | head -1) || true
 echo -e "${GREEN}✓ Calamares installed: ${CALAMARES_VERSION}${NC}"
 
 # Step 5: Build calamares-config package
@@ -407,7 +418,7 @@ makepkg -f --noconfirm --nodeps || {
 }
 
 # Find the built package (could be .tar.zst or .tar.gz depending on makepkg config)
-PKGFILE=$(find "${CALAMARES_CONFIG_DIR}" -maxdepth 1 \( -name 'calamares-config-*.pkg.tar.zst' -o -name 'calamares-config-*.pkg.tar.gz' \) -type f | head -1)
+PKGFILE=$(find "${CALAMARES_CONFIG_DIR}" -maxdepth 1 \( -name 'calamares-config-*.pkg.tar.zst' -o -name 'calamares-config-*.pkg.tar.gz' \) -type f | head -1) || true
 
 if [ -z "${PKGFILE}" ]; then
     echo -e "${RED}Error: Built package file not found${NC}" >&2

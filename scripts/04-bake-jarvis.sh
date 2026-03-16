@@ -2,7 +2,7 @@
 # Step 4: Bake in Project-JARVIS
 # Installs Project-JARVIS code, dependencies, and services into the rootfs
 
-set -e
+set -eo pipefail
 
 # Source config file and shared utilities
 source build.config
@@ -173,6 +173,57 @@ OLLAMAEOF
 # Note: Ollama service not enabled in chroot (systemd not running)
 # It will be started via autostart on live boot, and can be enabled after installation
 echo -e "${BLUE}Ollama installed - service will autostart via XDG autostart on live boot${NC}"
+
+# Step 4b: Pre-pull Ollama model into squashfs
+# Baking the model in makes the live environment fully functional without internet
+# and is the main reason the ISO should be ~8 GB rather than ~1.5 GB.
+# Models are stored at /usr/share/ollama/.ollama/models — the HOME used by
+# ollama.service (Environment="HOME=/usr/share/ollama") — so the service finds
+# them on first boot without downloading anything.
+BAKE_MODEL="${OLLAMA_BAKE_MODEL:-qwen3:4b}"
+echo -e "${BLUE}Pre-pulling Ollama model '${BAKE_MODEL}' into rootfs...${NC}"
+echo -e "${YELLOW}NOTE: qwen3:4b is ~2.5 GB. Set OLLAMA_BAKE_MODEL=<name> to override.${NC}"
+
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    set -e
+
+    # Store models where the ollama.service expects them
+    export OLLAMA_MODELS=/usr/share/ollama/.ollama/models
+    export HOME=/usr/share/ollama
+    mkdir -p \"\${OLLAMA_MODELS}\"
+
+    # Start ollama serve in the background
+    echo '  -> Starting Ollama server for model pre-pull...'
+    /usr/local/bin/ollama serve &>/tmp/ollama-pull.log &
+    OLLAMA_PID=\$!
+
+    # Wait up to 60 s for the API to become ready
+    for i in \$(seq 1 30); do
+        if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+            echo '  -> Ollama ready.'
+            break
+        fi
+        sleep 2
+    done
+
+    if ! curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+        echo 'ERROR: Ollama did not start in time. Build log:' >&2
+        cat /tmp/ollama-pull.log >&2
+        kill \$OLLAMA_PID 2>/dev/null || true
+        exit 1
+    fi
+
+    echo \"  -> Pulling model: ${BAKE_MODEL} (this takes a while on first build)...\"
+    /usr/local/bin/ollama pull '${BAKE_MODEL}'
+
+    kill \$OLLAMA_PID 2>/dev/null || true
+    wait \$OLLAMA_PID 2>/dev/null || true
+
+    # Fix ownership so ollama.service (User=ollama) can read the models
+    chown -R ollama:ollama /usr/share/ollama 2>/dev/null || true
+    echo '  -> Model pre-pull complete.'
+"
+echo -e "${GREEN}✓ Ollama model '${BAKE_MODEL}' baked into rootfs${NC}"
 
 # Step 5: Create jarvis user and group
 echo -e "${BLUE}Creating jarvis user and group...${NC}"
@@ -651,13 +702,18 @@ for i in $(seq 1 60); do
     sleep 2
 done
 
-# Pull the model
-echo "Pulling model: ${MODEL} ..."
-if ollama pull "$MODEL"; then
-    echo "Model pulled successfully."
+# Check if model was already baked into the ISO (step 4b pre-pull)
+if ollama list 2>/dev/null | grep -q "${MODEL%%:*}"; then
+    echo "Model ${MODEL} already present (baked into ISO). Skipping download."
 else
-    echo "Warning: Failed to pull model. Will retry on next boot."
-    exit 1
+    # Model not present — pull it now (e.g. user changed LLM_MODEL after install)
+    echo "Pulling model: ${MODEL} ..."
+    if ollama pull "$MODEL"; then
+        echo "Model pulled successfully."
+    else
+        echo "Warning: Failed to pull model. Will retry on next boot."
+        exit 1
+    fi
 fi
 
 # Mark setup as done

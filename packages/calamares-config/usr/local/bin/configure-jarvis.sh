@@ -10,7 +10,37 @@ set -e
 
 ROOT="${1:?ERROR: target root path not provided}"
 
+if [ ! -d "${ROOT}" ]; then
+    echo "ERROR: Target root directory does not exist: ${ROOT}" >&2
+    exit 1
+fi
+
 echo "Configuring JARVIS for target: ${ROOT}"
+
+# ---------------------------------------------------------------------------
+# Remove stock linux kernel boot files (linux-jarvisos is the installed kernel)
+# ---------------------------------------------------------------------------
+# The squashfs rootfs contains both the stock 'linux' and 'linux-jarvisos'
+# packages.  After Calamares installs, only linux-jarvisos should be active.
+# Remove stock linux boot files so the bootloader and mkinitcpio only see
+# linux-jarvisos, preventing confusion and wasted /boot space.
+echo "Removing stock linux kernel files (linux-jarvisos is the installed kernel)..."
+rm -f "${ROOT}/boot/vmlinuz-linux" 2>/dev/null || true
+rm -f "${ROOT}/boot/initramfs-linux.img" 2>/dev/null || true
+rm -f "${ROOT}/boot/initramfs-linux-fallback.img" 2>/dev/null || true
+rm -f "${ROOT}/etc/mkinitcpio.d/linux.preset" 2>/dev/null || true
+
+# Remove stock linux bootloader entries if using systemd-boot
+# (the bootloader module may have created entries for both kernels)
+if [ -d "${ROOT}/boot/loader/entries" ]; then
+    for entry in "${ROOT}"/boot/loader/entries/*linux.conf; do
+        # Only remove entries for stock linux, not linux-jarvisos
+        if [ -f "${entry}" ] && grep -q "vmlinuz-linux$" "${entry}" 2>/dev/null; then
+            echo "  Removing stock linux boot entry: $(basename "${entry}")"
+            rm -f "${entry}"
+        fi
+    done
+fi
 
 # ---------------------------------------------------------------------------
 # Remove live-ISO autologin
@@ -60,9 +90,11 @@ fi
 # ---------------------------------------------------------------------------
 echo "Creating JARVIS welcome autostart..."
 
-# Detect the username Calamares created — look for real users in target /home
+# Detect the username Calamares created — look for real users in target /home.
+# Filter out "liveuser" (live-ISO account) and pick the first real user.
 INSTALL_USER=""
-INSTALL_USER=$(ls "${ROOT}/home/" 2>/dev/null | head -1)
+INSTALL_USER=$(find "${ROOT}/home/" -maxdepth 1 -mindepth 1 -type d \
+    ! -name "liveuser" -printf '%f\n' 2>/dev/null | sort | head -1)
 
 if [ -n "${INSTALL_USER}" ]; then
     AUTOSTART_DIR="${ROOT}/home/${INSTALL_USER}/.config/autostart"

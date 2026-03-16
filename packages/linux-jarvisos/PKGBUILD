@@ -14,7 +14,7 @@
 pkgbase=linux-jarvisos
 pkgname=(linux-jarvisos linux-jarvisos-headers)
 pkgver=6.19.6
-pkgrel=1
+pkgrel=2
 pkgdesc='Linux kernel with JARVIS AI integration drivers'
 arch=(x86_64)
 url='https://github.com/majdaltouzach/linux'
@@ -31,13 +31,28 @@ _localversion='-jarvisos'
 prepare() {
     cd "$_ksrc"
 
-    if [[ -f .config ]]; then
-        echo "  -> Updating existing .config with olddefconfig..."
-        make olddefconfig LOCALVERSION="$_localversion"
+    # ── Base config ──────────────────────────────────────────────────────────
+    # Use the host kernel's config for maximum hardware compatibility.
+    # x86_64_defconfig is far too minimal for a general-purpose distro kernel
+    # (missing most WiFi, storage, input, audio, GPU drivers).  The host
+    # config (CachyOS/Arch) has comprehensive module coverage that matches
+    # what users expect from an Arch-based live ISO.
+    #
+    # Priority: /proc/config.gz > existing .config > x86_64_defconfig
+    if [[ -r /proc/config.gz ]]; then
+        echo "  -> Extracting host kernel config from /proc/config.gz..."
+        zcat /proc/config.gz > .config
+    elif [[ -f .config ]]; then
+        echo "  -> Using existing .config..."
     else
-        echo "  -> Generating baseline config from x86_64_defconfig..."
+        echo "  -> WARNING: /proc/config.gz not available, falling back to x86_64_defconfig"
+        echo "  ->          The resulting kernel may lack drivers for common hardware!"
         make x86_64_defconfig LOCALVERSION="$_localversion"
     fi
+
+    # Reconcile config with this kernel version (set new symbols to defaults,
+    # drop symbols that no longer exist in this source tree)
+    make olddefconfig LOCALVERSION="$_localversion"
 
     echo "  -> Applying JARVIS kernel config options..."
 
@@ -77,25 +92,96 @@ prepare() {
 
     # Live boot / squashfs (CRITICAL for archiso live boot hook)
     scripts/config --enable CONFIG_SQUASHFS
+    scripts/config --enable CONFIG_SQUASHFS_XZ
     scripts/config --enable CONFIG_SQUASHFS_ZSTD
+    scripts/config --enable CONFIG_SQUASHFS_LZO
+    scripts/config --enable CONFIG_SQUASHFS_LZ4
     scripts/config --enable CONFIG_OVERLAY_FS
+    scripts/config --enable CONFIG_BLK_DEV_LOOP
 
     # USB boot support (needed for live USB)
     scripts/config --enable CONFIG_USB_SUPPORT
     scripts/config --enable CONFIG_USB_XHCI_HCD
+    scripts/config --enable CONFIG_USB_XHCI_PCI
     scripts/config --enable CONFIG_USB_EHCI_HCD
+    scripts/config --enable CONFIG_USB_EHCI_PCI
+    scripts/config --enable CONFIG_USB_OHCI_HCD
     scripts/config --enable CONFIG_USB_STORAGE
     scripts/config --enable CONFIG_USB_UAS
 
-    # Storage (SATA, NVMe)
+    # Storage (SATA, NVMe, virtio for VMs)
     scripts/config --enable CONFIG_ATA
     scripts/config --enable CONFIG_SATA_AHCI
     scripts/config --enable CONFIG_BLK_DEV_NVME
+    scripts/config --enable CONFIG_BLK_DEV_SD
+    scripts/config --enable CONFIG_VIRTIO_BLK
+    scripts/config --enable CONFIG_VIRTIO_PCI
+    scripts/config --enable CONFIG_SCSI
+    scripts/config --enable CONFIG_SCSI_MOD
 
-    # Filesystems (needed for the installed system)
+    # Filesystems (needed for the installed system + live boot)
     scripts/config --enable CONFIG_EXT4_FS
     scripts/config --enable CONFIG_VFAT_FS
     scripts/config --enable CONFIG_BTRFS_FS
+    scripts/config --enable CONFIG_XFS_FS
+    scripts/config --enable CONFIG_NTFS3_FS
+    scripts/config --enable CONFIG_EXFAT_FS
+    scripts/config --enable CONFIG_TMPFS
+    scripts/config --enable CONFIG_DEVTMPFS
+    scripts/config --enable CONFIG_DEVTMPFS_MOUNT
+
+    # Device mapper (LVM, LUKS encryption)
+    scripts/config --enable CONFIG_BLK_DEV_DM
+    scripts/config --enable CONFIG_DM_CRYPT
+
+    # Graphics (KMS for early boot display)
+    scripts/config --enable CONFIG_DRM
+    scripts/config --module CONFIG_DRM_I915
+    scripts/config --module CONFIG_DRM_AMDGPU
+    scripts/config --module CONFIG_DRM_NOUVEAU
+    scripts/config --enable CONFIG_DRM_FBDEV_EMULATION
+    scripts/config --enable CONFIG_FB
+    scripts/config --enable CONFIG_FRAMEBUFFER_CONSOLE
+
+    # Input devices
+    scripts/config --enable CONFIG_INPUT
+    scripts/config --enable CONFIG_INPUT_KEYBOARD
+    scripts/config --enable CONFIG_INPUT_MOUSE
+    scripts/config --enable CONFIG_HID
+    scripts/config --enable CONFIG_USB_HID
+    scripts/config --enable CONFIG_I2C_HID_CORE
+    scripts/config --enable CONFIG_HID_GENERIC
+    scripts/config --enable CONFIG_HID_MULTITOUCH
+
+    # Network drivers (WiFi, Ethernet — critical for live boot)
+    scripts/config --module CONFIG_IWLWIFI
+    scripts/config --module CONFIG_IWLMVM
+    scripts/config --module CONFIG_MT7921E
+    scripts/config --module CONFIG_RTW88
+    scripts/config --module CONFIG_RTW89
+    scripts/config --module CONFIG_BRCMFMAC
+    scripts/config --module CONFIG_ATH10K
+    scripts/config --module CONFIG_ATH11K
+    scripts/config --module CONFIG_E1000E
+    scripts/config --module CONFIG_R8169
+    scripts/config --module CONFIG_IGB
+    scripts/config --enable CONFIG_CFG80211
+    scripts/config --enable CONFIG_MAC80211
+    scripts/config --enable CONFIG_WIRELESS
+    scripts/config --enable CONFIG_WLAN
+    scripts/config --enable CONFIG_RFKILL
+
+    # Sound (HDA Intel, SOF)
+    scripts/config --module CONFIG_SND_HDA_INTEL
+    scripts/config --module CONFIG_SND_HDA_CODEC_REALTEK
+    scripts/config --module CONFIG_SND_HDA_CODEC_HDMI
+    scripts/config --module CONFIG_SND_SOC
+    scripts/config --enable CONFIG_SOUND
+    scripts/config --enable CONFIG_SND
+
+    # Bluetooth
+    scripts/config --module CONFIG_BT
+    scripts/config --module CONFIG_BT_HCIBTUSB
 
     # Resolve any new symbols introduced by the options above
     make olddefconfig LOCALVERSION="$_localversion"
@@ -138,6 +224,10 @@ package_linux-jarvisos() {
     rm -f "$modulesdir"/{source,build}
 
     echo "  -> Installing mkinitcpio preset..."
+    # CRITICAL: ALL_kver must be the kernel VERSION STRING (e.g. "6.19.6-jarvisos-g...")
+    # that matches the directory name under /usr/lib/modules/.
+    # It must NOT be a path like "/boot/vmlinuz-linux-jarvisos" — that causes
+    # mkinitcpio to look for /usr/lib/modules//boot/vmlinuz-linux-jarvisos which fails.
     install -Dm644 /dev/stdin "$pkgdir/etc/mkinitcpio.d/linux-jarvisos.preset" << EOF
 # mkinitcpio preset for linux-jarvisos
 # JARVIS OS — custom kernel with AI/system integration drivers
@@ -145,7 +235,7 @@ package_linux-jarvisos() {
 # The live ISO uses the archiso/memdisk hooks (set in /etc/mkinitcpio.conf).
 # Calamares rewrites mkinitcpio.conf on the installed system to remove them.
 ALL_config="/etc/mkinitcpio.conf"
-ALL_kver="/boot/vmlinuz-linux-jarvisos"
+ALL_kver="${kernelrelease}"
 
 PRESETS=('default' 'fallback')
 

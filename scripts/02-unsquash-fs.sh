@@ -2,7 +2,7 @@
 # Step 2: Unsquash the SquashFS filesystem
 # Extracts the compressed root filesystem from the ISO
 
-set -e
+set -eo pipefail
 
 # Source config file and shared utilities
 source build.config
@@ -150,7 +150,7 @@ echo -e "${BLUE}You can now modify this filesystem in steps 3-5${NC}"
 echo -e "${BLUE}Key directories extracted:${NC}"
 for dir in etc usr/bin boot; do
     if [ -d "${SQUASHFS_ROOTFS}/${dir}" ]; then
-        COUNT=$(find "${SQUASHFS_ROOTFS}/${dir}" -type f 2>/dev/null | wc -l)
+        COUNT=$(sudo find "${SQUASHFS_ROOTFS}/${dir}" -type f 2>/dev/null | wc -l || echo "0")
         echo -e "  ${GREEN}✓${NC} /${dir} (${COUNT} files)"
     fi
 done
