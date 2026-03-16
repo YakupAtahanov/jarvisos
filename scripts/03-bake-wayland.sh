@@ -563,6 +563,19 @@ if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed archis
 fi
 echo -e "${GREEN}✓ archiso package installed (provides memdisk and archiso hooks)${NC}"
 
+# ── Fix aic8800 DKMS Makefile (uses uname -r instead of KVER) ──────────────
+# The upstream aic8800 Makefile uses $(shell uname -r) to find kernel headers,
+# which resolves to the BUILD HOST kernel (not the target linux-jarvisos kernel).
+# This causes DKMS to compile against the wrong headers. Fix: use $(KVER) which
+# DKMS sets to the target kernel version.
+if [ -f "${SQUASHFS_ROOTFS}/var/lib/dkms/aic8800/1.0.0/source/drivers/aic8800/Makefile" ]; then
+    echo -e "${BLUE}Patching aic8800 DKMS Makefile (fixing uname -r -> KVER)...${NC}"
+    sudo sed -i \
+        's|KDIR\s*=\s*/lib/modules/\$(shell uname -r)/build|KDIR  = /lib/modules/$(KVER)/build|g' \
+        "${SQUASHFS_ROOTFS}/var/lib/dkms/aic8800/1.0.0/source/drivers/aic8800/Makefile"
+    echo -e "${GREEN}✓ aic8800 DKMS Makefile patched${NC}"
+fi
+
 # ============================================================================
 # CRITICAL FIX: Create mkinitcpio.conf for maximum hardware compatibility
 # ============================================================================

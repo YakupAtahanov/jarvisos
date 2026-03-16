@@ -13,8 +13,8 @@
 
 pkgbase=linux-jarvisos
 pkgname=(linux-jarvisos linux-jarvisos-headers)
-pkgver=6.19.6
-pkgrel=2
+pkgver=6.19.8
+pkgrel=1
 pkgdesc='Linux kernel with JARVIS AI integration drivers'
 arch=(x86_64)
 url='https://github.com/majdaltouzach/linux'
@@ -132,7 +132,7 @@ prepare() {
 
     # Device mapper (LVM, LUKS encryption)
     scripts/config --enable CONFIG_BLK_DEV_DM
-    scripts/config --enable CONFIG_DM_CRYPT
+    scripts/config --module CONFIG_DM_CRYPT
 
     # Graphics (KMS for early boot display)
     scripts/config --enable CONFIG_DRM
@@ -182,6 +182,13 @@ prepare() {
     # Bluetooth
     scripts/config --module CONFIG_BT
     scripts/config --module CONFIG_BT_HCIBTUSB
+
+    # Apply JARVIS OS config fragment (ensures consistent settings regardless of host config)
+    if [[ -f "$_ksrc/arch/x86/configs/jarvisos.config" ]]; then
+        echo "  -> Merging JARVIS OS config fragment..."
+        "$_ksrc/scripts/kconfig/merge_config.sh" -m -O "$_ksrc" "$_ksrc/.config" \
+            "$_ksrc/arch/x86/configs/jarvisos.config"
+    fi
 
     # Resolve any new symbols introduced by the options above
     make olddefconfig LOCALVERSION="$_localversion"
