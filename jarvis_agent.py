@@ -272,9 +272,16 @@ def _setup_askpass() -> str:
     # If ksshaskpass is installed, use it directly — no wrapper needed
     for candidate in ("ksshaskpass", "/usr/lib/ssh/ksshaskpass",
                       "/usr/lib/ksshaskpass"):
-        if Path(candidate).exists() or _which(candidate):
+        # Path() is absolute — check it directly
+        if Path(candidate).exists():
             _ASKPASS_PATH = candidate
             ok(f"sudo askpass: {candidate}")
+            return _ASKPASS_PATH
+        # bare name — resolve to full path via PATH; SUDO_ASKPASS must be absolute
+        full = _which(candidate)
+        if full:
+            _ASKPASS_PATH = full
+            ok(f"sudo askpass: {full}")
             return _ASKPASS_PATH
 
     # Otherwise write a one-liner that calls kdialog
@@ -411,6 +418,13 @@ def run_cmd(cmd: str) -> tuple[str, int]:
     print(f"\n  {DIM}{'─' * 52}{R}")
     return "".join(collected), proc.returncode
 
+# ── Confirmation queue ────────────────────────────────────────────────────────
+# When a DANGEROUS-tier plan needs user approval, handle() sets this to a fresh
+# Queue and the text thread routes its next readline() result here instead of
+# input_q.  This avoids the race where readline() in the text thread grabs the
+# user's "y/n" before the main thread's input() call can see it.
+_confirm_q: "queue.Queue | None" = None
+
 # ── Request handler ───────────────────────────────────────────────────────────
 def handle(user_input, snap):
     print()
@@ -446,6 +460,15 @@ def handle(user_input, snap):
         )
     print()
 
+    # ── Policy override: force DANGEROUS tier for package managers ───────────
+    # The model sometimes mis-classifies `pacman -Syu` as ELEVATED.
+    # Any command that invokes a package manager must always require confirmation.
+    _PKG_PATTERNS = ("pacman ", "yay ", "paru ", "apt ", "dnf ", "zypper ")
+    for c in commands:
+        cmd = c.get("cmd", "")
+        if any(p in cmd for p in _PKG_PATTERNS) and c.get("tier") == "ELEVATED":
+            c["tier"] = "DANGEROUS"
+
     # ── FORBIDDEN: hard block ─────────────────────────────────────────────────
     if any(c.get("tier") == "FORBIDDEN" for c in commands):
         print(f"  {RED}{BOLD}[POLICY: FORBIDDEN]  Request blocked unconditionally.{R}")
@@ -454,14 +477,28 @@ def handle(user_input, snap):
 
     # ── DANGEROUS: require explicit confirmation ──────────────────────────────
     if any(c.get("tier") == "DANGEROUS" for c in commands):
+        global _confirm_q
         print(f"  {RED}[POLICY: DANGEROUS]{R}  This plan will modify system state.")
         print(f"  {BOLD}Summary:{R} {summary}\n")
+        # Route the next text-thread readline() result to a private queue so
+        # we don't race with readline() for ownership of stdin.
+        cq: queue.Queue = queue.Queue()
+        _confirm_q = cq
+        print(f"  Confirm execution? [y/N]  ", end="", flush=True)
         try:
-            confirm = input(f"  Confirm execution? [y/N]  ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
+            _, response = cq.get(timeout=30)
+            confirm = response.strip().lower()
+        except queue.Empty:
+            _confirm_q = None
+            print()
+            jarvis("Confirmation timed out — aborted.")
+            return
+        except KeyboardInterrupt:
+            _confirm_q = None
             print()
             jarvis("Aborted.")
             return
+        _confirm_q = None
         if confirm != "y":
             jarvis("Aborted by user.")
             return
@@ -658,7 +695,12 @@ def _text_thread(input_q: queue.Queue):
             if not line:        # EOF
                 input_q.put(("quit", ""))
                 break
-            input_q.put(("text", line.rstrip("\n")))
+            # If a DANGEROUS confirmation is pending, route there instead
+            cq = _confirm_q
+            if cq is not None:
+                cq.put(("text", line.rstrip("\n")))
+            else:
+                input_q.put(("text", line.rstrip("\n")))
         except (EOFError, KeyboardInterrupt):
             input_q.put(("quit", ""))
             break
