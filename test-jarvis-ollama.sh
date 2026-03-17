@@ -154,9 +154,9 @@ if [[ -z "$AVAILABLE_MODELS" ]]; then
     # Pick recommendation based on RAM
     MEM_AVAIL_MB=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
     if (( MEM_AVAIL_MB > 20000 )); then
-        SUGGEST="qwen2.5:7b"
+        SUGGEST="qwen3:8b"
     else
-        SUGGEST="gemma3:4b"
+        SUGGEST="qwen3:4b"
     fi
 
     echo -e "  Available RAM: ${BOLD}${MEM_AVAIL_MB} MB${RESET}"
@@ -168,7 +168,7 @@ if [[ -z "$AVAILABLE_MODELS" ]]; then
         ollama pull "$SUGGEST" || die "Pull failed"
         AVAILABLE_MODELS="$SUGGEST"
     else
-        die "No model available. Pull one first: ollama pull qwen2.5:7b"
+        die "No model available. Pull one first: ollama pull qwen3:4b"
     fi
 fi
 
@@ -189,9 +189,9 @@ result = subprocess.run(['curl','-sf','http://localhost:11434/api/tags'],
 import json
 models = [m['name'] for m in json.loads(result.stdout).get('models', [])]
 
-large  = ['qwen2.5:7','llama3.1','llama3:8','mistral:7','gemma3:12','gemma3:27','phi4']
-medium = ['qwen2.5:3','llama3.2:3','gemma3:4','phi3','gemma2:9']
-small  = ['qwen2.5:1','gemma3:1','llama3.2:1','tinyllama','phi3:mini']
+large  = ['qwen3:8','qwen3:14','qwen3:32','qwen2.5:7','llama3.1','llama3:8','mistral:7','gemma3:12','gemma3:27','phi4']
+medium = ['qwen3:4','qwen2.5:3','llama3.2:3','gemma3:4','phi3','gemma2:9']
+small  = ['qwen3:1','qwen2.5:1','gemma3:1','llama3.2:1','tinyllama','phi3:mini']
 
 order = {'large': large+medium+small,
          'medium': medium+large+small,
