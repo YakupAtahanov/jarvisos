@@ -1,0 +1,47 @@
+# JARVIS OS — Optional package groups for Calamares netinstall module.
+# These are presented to the user during installation and installed
+# via the `packages` module (pacman backend) after user configuration.
+
+- name: "Printing Support"
+  description: "CUPS printing stack with broad printer driver coverage"
+  hidden: false
+  selected: false
+  critical: false
+  packages:
+    - cups
+    - cups-filters
+    - cups-pdf
+    - foomatic-db
+    - foomatic-db-engine
+    - foomatic-db-gutenprint-ppds
+    - foomatic-db-nonfree
+    - foomatic-db-nonfree-ppds
+    - foomatic-db-ppds
+    - ghostscript
+    - gsfonts
+    - gutenprint
+    - splix
+    - system-config-printer
+
+- name: "HP Printer / Scanner Support"
+  description: "Additional drivers for HP printers and scanners (HPLIP)"
+  hidden: false
+  selected: false
+  critical: false
+  packages:
+    - hplip
+    - python-pyqt5
+    - python-reportlab
+    - cups
+    - cups-filters
+    - cups-pdf
+
+- name: "Accessibility Tools"
+  description: "Screen reader (Orca), mouse tweaks, and text-to-speech (espeak-ng)"
+  hidden: false
+  selected: false
+  critical: false
+  packages:
+    - espeak-ng
+    - mousetweaks
+    - orca

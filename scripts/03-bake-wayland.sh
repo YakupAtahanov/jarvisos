@@ -2,7 +2,7 @@
 # Step 3: Bake in Wayland and GUI packages
 # Installs Wayland, KDE Plasma, and GUI components into the rootfs
 
-set -e
+set -eo pipefail
 
 # Source config file and shared utilities
 source build.config
@@ -563,6 +563,19 @@ if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed archis
 fi
 echo -e "${GREEN}✓ archiso package installed (provides memdisk and archiso hooks)${NC}"
 
+# ── Fix aic8800 DKMS Makefile (uses uname -r instead of KVER) ──────────────
+# The upstream aic8800 Makefile uses $(shell uname -r) to find kernel headers,
+# which resolves to the BUILD HOST kernel (not the target linux-jarvisos kernel).
+# This causes DKMS to compile against the wrong headers. Fix: use $(KVER) which
+# DKMS sets to the target kernel version.
+if [ -f "${SQUASHFS_ROOTFS}/var/lib/dkms/aic8800/1.0.0/source/drivers/aic8800/Makefile" ]; then
+    echo -e "${BLUE}Patching aic8800 DKMS Makefile (fixing uname -r -> KVER)...${NC}"
+    sudo sed -i \
+        's|KDIR\s*=\s*/lib/modules/\$(shell uname -r)/build|KDIR  = /lib/modules/$(KVER)/build|g' \
+        "${SQUASHFS_ROOTFS}/var/lib/dkms/aic8800/1.0.0/source/drivers/aic8800/Makefile"
+    echo -e "${GREEN}✓ aic8800 DKMS Makefile patched${NC}"
+fi
+
 # ============================================================================
 # CRITICAL FIX: Create mkinitcpio.conf for maximum hardware compatibility
 # ============================================================================
@@ -844,31 +857,44 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     # Set hostname
     echo 'jarvisos' > /etc/hostname
 
-    # Brand as JarvisOS (override Arch Linux defaults)
-    cat > /etc/os-release << 'OSREOF'
-NAME=\"JarvisOS\"
-PRETTY_NAME=\"JarvisOS\"
-ID=jarvisos
-ID_LIKE=arch
-BUILD_ID=rolling
-ANSI_COLOR=\"38;2;23;147;209\"
-HOME_URL=\"https://github.com/jarvisos\"
-LOGO=jarvisos
-OSREOF
-
     # Console login banner
     echo 'Welcome to JarvisOS \\r (\\l)' > /etc/issue
-    cat > /etc/hosts << 'HOSTSEOF'
-127.0.0.1   localhost
-::1         localhost
-127.0.1.1   jarvisos.localdomain jarvisos
-HOSTSEOF
+    echo '' > /etc/issue.net
 
     # Ensure root can login (check passwd entry)
     if ! getent passwd root >/dev/null 2>&1; then
         echo 'Warning: root user not found in passwd'
     fi
 " 2>&1 | grep -vE "WARNING.*mountpoint" || true
+
+# Brand as JarvisOS — written via tee outside chroot to avoid quote-in-heredoc issues
+# inside bash -c "..." double-quoted strings.
+sudo rm -f "${SQUASHFS_ROOTFS}/etc/os-release" "${SQUASHFS_ROOTFS}/usr/lib/os-release" 2>/dev/null || true
+sudo tee "${SQUASHFS_ROOTFS}/usr/lib/os-release" > /dev/null << 'OSREOF'
+NAME="JarvisOS"
+PRETTY_NAME="JarvisOS"
+ID=jarvisos
+ID_LIKE=arch
+BUILD_ID=rolling
+ANSI_COLOR="38;2;23;147;209"
+HOME_URL="https://github.com/jarvisos"
+LOGO=jarvisos
+OSREOF
+sudo cp "${SQUASHFS_ROOTFS}/usr/lib/os-release" "${SQUASHFS_ROOTFS}/etc/os-release"
+
+# lsb-release for tools that check it (neofetch, screenfetch, etc.)
+sudo tee "${SQUASHFS_ROOTFS}/etc/lsb-release" > /dev/null << 'LSBREOF'
+DISTRIB_ID=JarvisOS
+DISTRIB_RELEASE=rolling
+DISTRIB_DESCRIPTION="JarvisOS"
+LSBREOF
+
+# /etc/hosts
+sudo tee "${SQUASHFS_ROOTFS}/etc/hosts" > /dev/null << 'HOSTSEOF'
+127.0.0.1   localhost
+::1         localhost
+127.0.1.1   jarvisos.localdomain jarvisos
+HOSTSEOF
 
 # ============================================================================
 # Create liveuser account (standard live ISO practice)
@@ -946,8 +972,11 @@ echo -e "${BLUE}Enabling services...${NC}"
 echo -e "${BLUE}Disabling conflicting network services...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable systemd-networkd.service 2>/dev/null || true
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable dhcpcd.service 2>/dev/null || true
-# Note: iwd is not installed, so no need to disable it
-# NetworkManager will use wpa_supplicant as the WiFi backend
+# Disable and mask iwd — it conflicts with wpa_supplicant (our chosen NM backend).
+# iwd gets pulled as an optional dep of networkmanager; if present and enabled it
+# enters a restart loop because wpa_supplicant already owns the WiFi hardware.
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl disable iwd.service 2>/dev/null || true
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl mask iwd.service 2>/dev/null || true
 
 # Enable systemd-resolved (required for NetworkManager DNS resolution)
 echo -e "${BLUE}Enabling systemd-resolved...${NC}"
@@ -972,38 +1001,51 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable rtkit-daemon.service
 echo -e "${GREEN}✓ Services enabled${NC}"
 
 # Step 8.5: Enable PipeWire audio services globally and for liveuser
-echo -e "${BLUE}Enabling PipeWire audio services for liveuser...${NC}"
+# Modern PipeWire (0.3.x+) uses SOCKET ACTIVATION: pipewire.socket and
+# pipewire-pulse.socket. Enabling .service directly can cause startup races.
+# Socket units start the corresponding .service on-demand when a client connects.
+echo -e "${BLUE}Enabling PipeWire audio services (socket activation)...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
-    # Attempt global user-service enable via systemctl (may fail in chroot - that's OK)
-    # systemctl --global creates symlinks in /etc/systemd/user/default.target.wants/
-    # which applies to ALL users' sessions.
-    systemctl --user --global enable pipewire.service 2>/dev/null || true
-    systemctl --user --global enable pipewire-pulse.service 2>/dev/null || true
+    # --- Global enablement (all users) via systemctl --global ---
+    # Enable socket units (modern PipeWire activation method)
+    systemctl --user --global enable pipewire.socket 2>/dev/null || true
+    systemctl --user --global enable pipewire-pulse.socket 2>/dev/null || true
     systemctl --user --global enable wireplumber.service 2>/dev/null || true
 
-    # Belt-and-suspenders: create the symlinks manually in case systemctl failed.
-    # /etc/systemd/user/ = global (all users); /home/liveuser/.config/... = liveuser-specific
+    # --- Belt-and-suspenders: create symlinks manually ---
+    # systemctl --global may fail in chroot (no D-Bus), so create them directly.
+    # Socket units go in sockets.target.wants, service units in default.target.wants.
+    mkdir -p /etc/systemd/user/sockets.target.wants
     mkdir -p /etc/systemd/user/default.target.wants
-    for svc in pipewire.service pipewire-pulse.service wireplumber.service; do
+
+    # Socket activation (primary method)
+    for sock in pipewire.socket pipewire-pulse.socket; do
+        ln -sf /usr/lib/systemd/user/\$sock /etc/systemd/user/sockets.target.wants/\$sock 2>/dev/null || true
+    done
+
+    # WirePlumber is a service (session manager, not socket-activated)
+    ln -sf /usr/lib/systemd/user/wireplumber.service /etc/systemd/user/default.target.wants/wireplumber.service 2>/dev/null || true
+
+    # Also enable the .service units as fallback (in case socket activation is not
+    # available on the installed system's PipeWire version)
+    for svc in pipewire.service pipewire-pulse.service; do
         ln -sf /usr/lib/systemd/user/\$svc /etc/systemd/user/default.target.wants/\$svc 2>/dev/null || true
     done
 
-    # Create liveuser-specific symlinks (user-local override, takes priority)
+    # --- Per-user enablement for liveuser ---
+    mkdir -p /home/liveuser/.config/systemd/user/sockets.target.wants
     mkdir -p /home/liveuser/.config/systemd/user/default.target.wants
+    for sock in pipewire.socket pipewire-pulse.socket; do
+        ln -sf /usr/lib/systemd/user/\$sock \
+            /home/liveuser/.config/systemd/user/sockets.target.wants/\$sock 2>/dev/null || true
+    done
     for svc in pipewire.service pipewire-pulse.service wireplumber.service; do
         ln -sf /usr/lib/systemd/user/\$svc \
             /home/liveuser/.config/systemd/user/default.target.wants/\$svc 2>/dev/null || true
     done
     chown -R liveuser:liveuser /home/liveuser/.config
-
-    # Also do root (belt and suspenders)
-    mkdir -p /root/.config/systemd/user/default.target.wants
-    for svc in pipewire.service pipewire-pulse.service wireplumber.service; do
-        ln -sf /usr/lib/systemd/user/\$svc \
-            /root/.config/systemd/user/default.target.wants/\$svc 2>/dev/null || true
-    done
 "
-echo -e "${GREEN}✓ PipeWire audio services enabled${NC}"
+echo -e "${GREEN}✓ PipeWire audio services enabled (socket + service activation)${NC}"
 
 # Step 8.6: Create PipeWire autostart script for live ISO
 echo -e "${BLUE}Creating PipeWire autostart script...${NC}"
@@ -1145,10 +1187,141 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" chown liveuser:liveuser \
     /home/liveuser/Desktop/install-jarvisos.desktop
 echo -e "${GREEN}✓ Installer shortcut created on liveuser Desktop${NC}"
 
+# ============================================================================
+# CRITICAL: Fix liveuser home directory ownership from host side
+# ============================================================================
+# Files created by 'sudo tee' from outside the chroot get the BUILD HOST's
+# UID/GID mapping (e.g. trojanhorse:trojanhorse). The chroot 'chown' commands
+# change ownership inside the chroot's namespace, but the host-side view may
+# still show the wrong owner. Fix it definitively from the host by using the
+# numeric UID/GID that liveuser has inside the rootfs.
+echo -e "${BLUE}Fixing liveuser home directory ownership (host-side)...${NC}"
+LIVEUSER_UID=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" id -u liveuser 2>/dev/null || echo "")
+LIVEUSER_GID=$(sudo arch-chroot "${SQUASHFS_ROOTFS}" id -g liveuser 2>/dev/null || echo "")
+if [ -n "${LIVEUSER_UID}" ] && [ -n "${LIVEUSER_GID}" ]; then
+    sudo chown -R "${LIVEUSER_UID}:${LIVEUSER_GID}" "${SQUASHFS_ROOTFS}/home/liveuser"
+    echo -e "${GREEN}✓ Fixed /home/liveuser ownership to UID:GID ${LIVEUSER_UID}:${LIVEUSER_GID}${NC}"
+else
+    echo -e "${YELLOW}Warning: Could not determine liveuser UID/GID${NC}"
+fi
+
 # Step 10: Cleanup inside chroot
 echo -e "${BLUE}Cleaning up package cache and temporary files...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Scc --noconfirm
 sudo arch-chroot "${SQUASHFS_ROOTFS}" sh -c "rm -rf /tmp/* /var/cache/pacman/pkg/*"
+
+# ============================================================================
+# VERIFICATION: Confirm all critical customizations are in place
+# ============================================================================
+# This catches silent failures (packages not installed, services not enabled,
+# user not created, configs overwritten, etc.)
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}Verifying critical customizations...${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+VERIFY_FAIL=0
+
+# Check KDE/SDDM installed
+if sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Q plasma-meta >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} plasma-meta installed"
+else
+    echo -e "  ${RED}✗${NC} plasma-meta NOT installed"
+    VERIFY_FAIL=1
+fi
+
+if sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Q sddm >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} sddm installed"
+else
+    echo -e "  ${RED}✗${NC} sddm NOT installed"
+    VERIFY_FAIL=1
+fi
+
+# Check NetworkManager installed
+if sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Q networkmanager >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} networkmanager installed"
+else
+    echo -e "  ${RED}✗${NC} networkmanager NOT installed"
+    VERIFY_FAIL=1
+fi
+
+# Check PipeWire installed
+if sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Q pipewire >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} pipewire installed"
+else
+    echo -e "  ${RED}✗${NC} pipewire NOT installed"
+    VERIFY_FAIL=1
+fi
+
+# Check liveuser exists
+if sudo arch-chroot "${SQUASHFS_ROOTFS}" id liveuser >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} liveuser account exists"
+else
+    echo -e "  ${RED}✗${NC} liveuser account MISSING"
+    VERIFY_FAIL=1
+fi
+
+# Check SDDM enabled
+if sudo test -L "${SQUASHFS_ROOTFS}/etc/systemd/system/display-manager.service"; then
+    echo -e "  ${GREEN}✓${NC} sddm.service enabled (display-manager.service symlink)"
+else
+    echo -e "  ${RED}✗${NC} sddm.service NOT enabled"
+    VERIFY_FAIL=1
+fi
+
+# Check NetworkManager enabled
+if sudo test -L "${SQUASHFS_ROOTFS}/etc/systemd/system/multi-user.target.wants/NetworkManager.service" || \
+   sudo test -L "${SQUASHFS_ROOTFS}/etc/systemd/system/NetworkManager.service"; then
+    echo -e "  ${GREEN}✓${NC} NetworkManager.service enabled"
+else
+    echo -e "  ${RED}✗${NC} NetworkManager.service NOT enabled"
+    VERIFY_FAIL=1
+fi
+
+# Check os-release branding
+if sudo grep -q "JarvisOS" "${SQUASHFS_ROOTFS}/etc/os-release" 2>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} /etc/os-release branded as JarvisOS"
+else
+    echo -e "  ${RED}✗${NC} /etc/os-release NOT branded (still shows Arch Linux)"
+    VERIFY_FAIL=1
+fi
+
+# Check SDDM autologin config
+if sudo test -f "${SQUASHFS_ROOTFS}/etc/sddm.conf.d/autologin.conf"; then
+    echo -e "  ${GREEN}✓${NC} SDDM autologin configured"
+else
+    echo -e "  ${RED}✗${NC} SDDM autologin config MISSING"
+    VERIFY_FAIL=1
+fi
+
+# Check PipeWire user services enabled globally (socket or service)
+if sudo test -L "${SQUASHFS_ROOTFS}/etc/systemd/user/sockets.target.wants/pipewire.socket" || \
+   sudo test -L "${SQUASHFS_ROOTFS}/etc/systemd/user/default.target.wants/pipewire.service"; then
+    echo -e "  ${GREEN}✓${NC} PipeWire user services enabled globally"
+else
+    echo -e "  ${RED}✗${NC} PipeWire user services NOT enabled globally"
+    VERIFY_FAIL=1
+fi
+
+# Check kernel files
+if sudo test -f "${SQUASHFS_ROOTFS}/boot/vmlinuz-linux" && \
+   sudo test -f "${SQUASHFS_ROOTFS}/boot/initramfs-linux.img"; then
+    echo -e "  ${GREEN}✓${NC} Kernel and initramfs present in /boot/"
+else
+    echo -e "  ${RED}✗${NC} Kernel files MISSING from /boot/"
+    VERIFY_FAIL=1
+fi
+
+if [ ${VERIFY_FAIL} -ne 0 ]; then
+    echo ""
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${RED}VERIFICATION FAILED: Some customizations are missing!${NC}"
+    echo -e "${RED}The ISO will NOT work correctly. Fix the issues above.${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}All verifications passed!${NC}"
 
 # Cleanup will be handled by trap
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

@@ -1,6 +1,14 @@
 post_install() {
-    echo ">>> Updating module dependencies for linux-jarvisos..."
-    depmod
+    # depmod -a runs for the *running* kernel, not the newly installed one.
+    # Iterate over every linux-jarvisos modules directory and run depmod
+    # with the explicit kernel release so modules.dep exists before mkinitcpio.
+    for _pkgbase_file in /usr/lib/modules/*/pkgbase; do
+        [[ -f "$_pkgbase_file" ]] || continue
+        [[ "$(< "$_pkgbase_file")" == "linux-jarvisos" ]] || continue
+        _kver=$(basename "$(dirname "$_pkgbase_file")")
+        echo ">>> Updating module dependencies for linux-jarvisos ($_kver)..."
+        depmod -a "$_kver"
+    done
 
     echo ">>> Generating initramfs for linux-jarvisos..."
     mkinitcpio -p linux-jarvisos

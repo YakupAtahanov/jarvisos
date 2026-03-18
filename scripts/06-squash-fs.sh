@@ -2,7 +2,7 @@
 # Step 6: Rebuild SquashFS
 # Compresses the modified rootfs back into a SquashFS file
 
-set -e
+set -eo pipefail
 
 # Source config file and shared utilities
 source build.config
@@ -118,20 +118,14 @@ sudo rm -f "${SQUASHFS_ROOTFS}/etc/resolv.conf" 2>/dev/null || true
 sudo ln -sf /run/systemd/resolve/stub-resolv.conf "${SQUASHFS_ROOTFS}/etc/resolv.conf"
 echo -e "${BLUE}Set /etc/resolv.conf → systemd-resolved stub (live-boot DNS)${NC}"
 
-# Create backup of original SquashFS
-SQUASHFS_BACKUP="${SQUASHFS_FILE}.backup"
-if [ ! -f "${SQUASHFS_BACKUP}" ]; then
-    echo -e "${BLUE}Creating backup of original SquashFS...${NC}"
-    sudo cp "${SQUASHFS_FILE}" "${SQUASHFS_BACKUP}"
-fi
-
 # Create new SquashFS file
 SQUASHFS_DIR=$(dirname "${SQUASHFS_FILE}")
 NEW_SQUASHFS="${SQUASHFS_DIR}/airootfs.sfs.new"
 
+# Remove leftover .new from prior aborted runs
+sudo rm -f "${NEW_SQUASHFS}" 2>/dev/null || true
+
 # Use xz compression (most common for Arch ISOs)
-# -comp xz -b 1M gives good compression ratio
-# CRITICAL: Exclude virtual filesystems and cache directories
 echo -e "${BLUE}Compressing SquashFS (this may take a while)...${NC}"
 echo -e "${BLUE}This can take 5-15 minutes depending on rootfs size...${NC}"
 
@@ -140,8 +134,10 @@ ROOTFS_SIZE=$(sudo du -sh "${SQUASHFS_ROOTFS}" 2>/dev/null | cut -f1)
 echo -e "${BLUE}Rootfs size: ${ROOTFS_SIZE}${NC}"
 
 # Build SquashFS with xz compression
-# Exclude virtual filesystems, cache, and temporary directories
-if sudo mksquashfs "${SQUASHFS_ROOTFS}" "${NEW_SQUASHFS}" \
+# CRITICAL: Do NOT pipe through tee — with pipefail off the tee mask mksquashfs failures.
+# Instead, redirect stderr+stdout to the log and stream it with tail -f in the background.
+SQUASHFS_LOG="${BUILD_DIR}/squashfs-build.log"
+sudo mksquashfs "${SQUASHFS_ROOTFS}" "${NEW_SQUASHFS}" \
     -comp xz \
     -b 1M \
     -noappend \
@@ -156,18 +152,19 @@ if sudo mksquashfs "${SQUASHFS_ROOTFS}" "${NEW_SQUASHFS}" \
     -e var/tmp \
     -e .snapshots \
     -e lost+found \
-    2>&1 | tee "${BUILD_DIR}/squashfs-build.log"; then
-    echo -e "${GREEN}✓ SquashFS compression complete${NC}"
-else
-    BUILD_EXIT=$?
-    echo -e "${RED}Error: mksquashfs failed with exit code ${BUILD_EXIT}${NC}" >&2
-    echo -e "${YELLOW}Check log: ${BUILD_DIR}/squashfs-build.log${NC}"
+    2>&1 | tee "${SQUASHFS_LOG}"
+# pipefail is on, so if mksquashfs fails the pipeline exits non-zero → set -e aborts
+
+echo -e "${GREEN}✓ SquashFS compression complete${NC}"
+
+# Verify the new SquashFS was created and is non-trivially sized
+if [ ! -f "${NEW_SQUASHFS}" ]; then
+    echo -e "${RED}Error: mksquashfs did not produce output file${NC}" >&2
     exit 1
 fi
-
-# Verify the new SquashFS was created
-if [ ! -f "${NEW_SQUASHFS}" ]; then
-    echo -e "${RED}Error: Failed to create new SquashFS${NC}" >&2
+NEW_SIZE_BYTES=$(stat -c%s "${NEW_SQUASHFS}" 2>/dev/null || echo 0)
+if [ "${NEW_SIZE_BYTES}" -lt 100000000 ]; then
+    echo -e "${RED}Error: New SquashFS is suspiciously small (${NEW_SIZE_BYTES} bytes). Build likely failed.${NC}" >&2
     exit 1
 fi
 
@@ -177,20 +174,58 @@ ORIGINAL_SIZE=$(du -h "${SQUASHFS_FILE}" 2>/dev/null | cut -f1)
 echo -e "${BLUE}Original SquashFS: ${ORIGINAL_SIZE}${NC}"
 echo -e "${BLUE}New SquashFS: ${NEW_SIZE}${NC}"
 
-# Replace original SquashFS
+# ============================================================================
+# CRITICAL: Replace original SquashFS and clean up signatures/checksums
+# ============================================================================
+# 1. Remove CMS signature — the Arch ISO ships with a .cms.sig that validates
+#    the ORIGINAL squashfs. After we replace the squashfs the signature no
+#    longer matches. The archiso initramfs hook checks for .cms.sig and if it
+#    exists but verification fails, boot drops to an emergency shell.
+echo -e "${BLUE}Removing CMS signature (no longer valid for rebuilt squashfs)...${NC}"
+sudo rm -f "${SQUASHFS_DIR}/airootfs.sfs.cms.sig" 2>/dev/null || true
+echo -e "${GREEN}✓ Removed .cms.sig${NC}"
+
+# 2. Remove backup file — it was included in the ISO by mistake previously,
+#    bloating the ISO by ~1GB with the unmodified squashfs.
+echo -e "${BLUE}Removing backup squashfs (not needed in ISO)...${NC}"
+sudo rm -f "${SQUASHFS_DIR}/airootfs.sfs.backup" 2>/dev/null || true
+
+# 3. Replace the original squashfs with our modified version
 echo -e "${BLUE}Replacing original SquashFS...${NC}"
-sudo mv "${NEW_SQUASHFS}" "${SQUASHFS_FILE}"
+sudo mv -f "${NEW_SQUASHFS}" "${SQUASHFS_FILE}"
 sudo chmod 644 "${SQUASHFS_FILE}"
 
-# Regenerate checksum
-echo -e "${BLUE}Regenerating checksum...${NC}"
-SQUASHFS_DIR=$(dirname "${SQUASHFS_FILE}")
-SHA512_FILE=$(find "${SQUASHFS_DIR}" -type f -iname "airootfs.sha512" | head -1)
-if [ -z "${SHA512_FILE}" ]; then
-    # Create checksum file if it doesn't exist
-    SHA512_FILE="${SQUASHFS_DIR}/airootfs.sha512"
+# 4. Verify the replacement actually happened
+REPLACED_SIZE_BYTES=$(stat -c%s "${SQUASHFS_FILE}" 2>/dev/null || echo 0)
+if [ "${REPLACED_SIZE_BYTES}" != "${NEW_SIZE_BYTES}" ]; then
+    echo -e "${RED}FATAL: SquashFS replacement failed! Size mismatch.${NC}" >&2
+    echo -e "${RED}  Expected: ${NEW_SIZE_BYTES} bytes${NC}" >&2
+    echo -e "${RED}  Got:      ${REPLACED_SIZE_BYTES} bytes${NC}" >&2
+    exit 1
 fi
-sha512sum "${SQUASHFS_FILE}" | sudo tee "${SHA512_FILE}" > /dev/null
+echo -e "${GREEN}✓ SquashFS replaced successfully (${NEW_SIZE})${NC}"
+
+# 5. Verify no stale files remain that would bloat the ISO or confuse boot
+for stale in "${SQUASHFS_DIR}/airootfs.sfs.new" "${SQUASHFS_DIR}/airootfs.sfs.backup" "${SQUASHFS_DIR}/airootfs.sfs.cms.sig"; do
+    if [ -f "${stale}" ]; then
+        echo -e "${YELLOW}Warning: Removing stale file: $(basename "${stale}")${NC}"
+        sudo rm -f "${stale}"
+    fi
+done
+
+# 6. Regenerate SHA-512 checksum with RELATIVE path (not absolute build path)
+#    The archiso hook does: cd <squashfs_dir> && sha512sum -c airootfs.sha512
+#    so the checksum file must reference "airootfs.sfs" (relative), not the
+#    full build path.
+echo -e "${BLUE}Regenerating SHA-512 checksum...${NC}"
+SHA512_FILE="${SQUASHFS_DIR}/airootfs.sha512"
+# Generate checksum from the directory itself to get a relative path
+(cd "${SQUASHFS_DIR}" && sha512sum airootfs.sfs) | sudo tee "${SHA512_FILE}" > /dev/null
+echo -e "${GREEN}✓ SHA-512 checksum regenerated${NC}"
+
+# 7. Final verification: list what's in the squashfs directory
+echo -e "${BLUE}SquashFS directory contents:${NC}"
+ls -lh "${SQUASHFS_DIR}/"
 
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${GREEN}Step 6 complete: SquashFS rebuilt${NC}"

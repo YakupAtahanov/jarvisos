@@ -2,7 +2,7 @@
 # Step 7: Rebuild ISO
 # Creates the final bootable ISO from the modified files
 
-set -e
+set -eo pipefail
 
 # Source config file and shared utilities
 source build.config
@@ -31,8 +31,16 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# Fixed volume ID for consistency (used with archisolabel)
-JARVISOS_VOLID="JARVISOS_202601"
+# Dynamic volume ID based on build date (ISO 9660 volume IDs max 32 chars)
+JARVISOS_VOLID="JARVISOS_$(date +%Y%m)"
+
+# Detect the source ISO's archisosearchuuid so we can find-and-replace it
+# reliably in ALL boot configs (syslinux, systemd-boot, grub, efiboot.img)
+SOURCE_UUID=""
+if [ -f "${BUILD_DIR}/.source-iso-uuid" ]; then
+    SOURCE_UUID=$(cat "${BUILD_DIR}/.source-iso-uuid")
+    echo -e "${BLUE}Source ISO UUID: ${SOURCE_UUID}${NC}"
+fi
 
 # Check if step 1 was completed (ISO extracted)
 if [ ! -d "${ISO_EXTRACT_DIR}" ] || [ -z "$(ls -A "${ISO_EXTRACT_DIR}" 2>/dev/null)" ]; then
@@ -46,6 +54,34 @@ if [ -z "${SQUASHFS_FILE}" ] || [ ! -f "${SQUASHFS_FILE}" ]; then
     echo -e "${RED}Error: Could not find airootfs.sfs. Please run step 6 first${NC}" >&2
     exit 1
 fi
+
+# ============================================================================
+# CRITICAL: Clean up stale files that would bloat the ISO
+# ============================================================================
+echo -e "${BLUE}Cleaning up stale build artifacts from ISO tree...${NC}"
+# Remove any leftover .new, .backup, .cms.sig files from the squashfs directory
+SQUASHFS_DIR=$(dirname "${SQUASHFS_FILE}")
+for stale in "${SQUASHFS_DIR}/airootfs.sfs.new" "${SQUASHFS_DIR}/airootfs.sfs.backup" "${SQUASHFS_DIR}/airootfs.sfs.cms.sig"; do
+    if [ -f "${stale}" ]; then
+        echo -e "${YELLOW}Removing stale file: $(basename "${stale}")${NC}"
+        sudo rm -f "${stale}"
+    fi
+done
+# Remove the [BOOT] directory created by 7z (El Torito boot images extracted separately)
+# These are NOT part of the ISO filesystem and should not be re-included
+if [ -d "${ISO_EXTRACT_DIR}/[BOOT]" ]; then
+    echo -e "${BLUE}Removing [BOOT]/ directory (7z extraction artifact)...${NC}"
+    rm -rf "${ISO_EXTRACT_DIR}/[BOOT]"
+fi
+echo -e "${GREEN}✓ Cleaned up stale files${NC}"
+
+# ============================================================================
+# CRITICAL: Ensure EFI boot image exists at EFI/archiso/efiboot.img
+# ============================================================================
+# Newer Arch ISOs embed the EFI boot image as an El Torito entry, not as a
+# regular file in the ISO filesystem. 7z extracts it to [BOOT]/2-Boot-NoEmul.img
+# but we already cleaned that up above. If EFI/archiso/efiboot.img doesn't exist,
+# we must create one from scratch for UEFI boot to work.
 
 # ============================================================================
 # CRITICAL: Copy kernel and initramfs to ISO structure
@@ -171,10 +207,34 @@ else
     echo -e "${YELLOW}  Run 'make step3b' to build linux-jarvisos.${NC}"
 fi
 
-# Verify stock kernel files were copied
-echo -e "${BLUE}Verifying copied files...${NC}"
+# ── CRITICAL: Make linux-jarvisos the primary boot kernel ──────────────────
+# The boot entries (syslinux, systemd-boot, efiboot.img) all reference the
+# standard names: vmlinuz-linux, initramfs-linux.img.  Rather than rewriting
+# every boot config, we overwrite the stock files with linux-jarvisos content.
+# The originals under their -jarvisos names remain for Calamares unpackfs.
+if [ "${JARVISOS_KERNEL_AVAILABLE}" = true ]; then
+    echo -e "${BLUE}Setting linux-jarvisos as PRIMARY boot kernel...${NC}"
+    cp -f "${ISO_BOOT_DIR}/vmlinuz-linux-jarvisos" "${ISO_BOOT_DIR}/vmlinuz-linux"
+    echo -e "${GREEN}✓ vmlinuz-linux overwritten with linux-jarvisos${NC}"
+
+    if [ -f "${ISO_BOOT_DIR}/initramfs-linux-jarvisos.img" ]; then
+        cp -f "${ISO_BOOT_DIR}/initramfs-linux-jarvisos.img" "${ISO_BOOT_DIR}/initramfs-linux.img"
+        echo -e "${GREEN}✓ initramfs-linux.img overwritten with linux-jarvisos${NC}"
+    fi
+
+    if [ -f "${ISO_BOOT_DIR}/initramfs-linux-jarvisos-fallback.img" ]; then
+        cp -f "${ISO_BOOT_DIR}/initramfs-linux-jarvisos-fallback.img" "${ISO_BOOT_DIR}/initramfs-linux-fallback.img"
+        echo -e "${GREEN}✓ initramfs-linux-fallback.img overwritten with linux-jarvisos${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠ linux-jarvisos not available — falling back to stock linux kernel${NC}"
+    echo -e "${YELLOW}  Run 'make step3b' to build linux-jarvisos before step 7.${NC}"
+fi
+
+# Verify kernel files are present (stock or jarvisos-overwritten)
+echo -e "${BLUE}Verifying boot kernel files...${NC}"
 if [ ! -f "${ISO_BOOT_DIR}/vmlinuz-linux" ] || [ ! -f "${ISO_BOOT_DIR}/initramfs-linux.img" ]; then
-    echo -e "${RED}FATAL: Failed to copy stock kernel/initramfs to ISO structure${NC}" >&2
+    echo -e "${RED}FATAL: Failed to copy kernel/initramfs to ISO structure${NC}" >&2
     ls -lah "${ISO_BOOT_DIR}/" || true
     exit 1
 fi
@@ -186,9 +246,11 @@ ls -lh "${ISO_BOOT_DIR}"/vmlinuz-linux* "${ISO_BOOT_DIR}"/initramfs-linux* 2>/de
     | awk '{print "  " $5, $9}'
 
 echo ""
-echo -e "${GREEN}✓ Stock linux kernel copied (live boot)${NC}"
 if [ "${JARVISOS_KERNEL_AVAILABLE}" = true ]; then
-    echo -e "${GREEN}✓ linux-jarvisos kernel copied (Calamares install target)${NC}"
+    echo -e "${GREEN}✓ linux-jarvisos is the live boot kernel${NC}"
+    echo -e "${GREEN}✓ linux-jarvisos files also available for Calamares unpackfs${NC}"
+else
+    echo -e "${GREEN}✓ Stock linux kernel copied (live boot fallback)${NC}"
 fi
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
@@ -368,34 +430,43 @@ copy_kernel_files() {
     local kernel_dst="${efi_mount}/EFI/archiso/boot/x86_64"
     echo -e "${BLUE}Copying kernel/initramfs files into EFI boot image...${NC}"
     sudo mkdir -p "${kernel_dst}"
-    
-    # Copy kernel
-    if [ -f "${kernel_src}/vmlinuz-linux" ]; then
-        sudo cp "${kernel_src}/vmlinuz-linux" "${kernel_dst}/" || true
-        echo -e "${GREEN}✓ Copied vmlinuz-linux${NC}"
+
+    # Copy kernel — REQUIRED, fail hard if this fails (truncated vmlinuz → "Unsupported")
+    if [ ! -f "${kernel_src}/vmlinuz-linux" ]; then
+        echo -e "${RED}FATAL: vmlinuz-linux not found at ${kernel_src}${NC}" >&2
+        return 1
     fi
-    
-    # Copy initramfs
-    if [ -f "${kernel_src}/initramfs-linux.img" ]; then
-        sudo cp "${kernel_src}/initramfs-linux.img" "${kernel_dst}/" || true
-        echo -e "${GREEN}✓ Copied initramfs-linux.img${NC}"
+    if ! sudo cp "${kernel_src}/vmlinuz-linux" "${kernel_dst}/"; then
+        echo -e "${RED}FATAL: Failed to copy vmlinuz-linux into EFI image (out of space?)${NC}" >&2
+        return 1
     fi
-    
-    # Copy fallback initramfs if it exists
-    if [ -f "${kernel_src}/initramfs-linux-fallback.img" ]; then
-        sudo cp "${kernel_src}/initramfs-linux-fallback.img" "${kernel_dst}/" || true
-        echo -e "${GREEN}✓ Copied initramfs-linux-fallback.img${NC}"
+    echo -e "${GREEN}✓ Copied vmlinuz-linux ($(du -h "${kernel_src}/vmlinuz-linux" | cut -f1))${NC}"
+
+    # Copy initramfs — REQUIRED, fail hard if this fails
+    if [ ! -f "${kernel_src}/initramfs-linux.img" ]; then
+        echo -e "${RED}FATAL: initramfs-linux.img not found at ${kernel_src}${NC}" >&2
+        return 1
     fi
-    
-    # Copy microcode updates if they exist
-    if [ -f "${kernel_src}/amd-ucode.img" ]; then
-        sudo cp "${kernel_src}/amd-ucode.img" "${kernel_dst}/" || true
-        echo -e "${GREEN}✓ Copied amd-ucode.img${NC}"
+    if ! sudo cp "${kernel_src}/initramfs-linux.img" "${kernel_dst}/"; then
+        echo -e "${RED}FATAL: Failed to copy initramfs-linux.img into EFI image (out of space?)${NC}" >&2
+        return 1
     fi
-    if [ -f "${kernel_src}/intel-ucode.img" ]; then
-        sudo cp "${kernel_src}/intel-ucode.img" "${kernel_dst}/" || true
-        echo -e "${GREEN}✓ Copied intel-ucode.img${NC}"
-    fi
+    echo -e "${GREEN}✓ Copied initramfs-linux.img ($(du -h "${kernel_src}/initramfs-linux.img" | cut -f1))${NC}"
+
+    # NOTE: fallback initramfs intentionally NOT copied into efiboot.img.
+    # No boot entry references it, and at ~240MB it would require a much larger image.
+    # The fallback is available in arch/boot/x86_64/ on the ISO filesystem for recovery.
+
+    # Copy microcode updates (optional)
+    for ucode in amd-ucode.img intel-ucode.img; do
+        if [ -f "${kernel_src}/${ucode}" ]; then
+            if ! sudo cp "${kernel_src}/${ucode}" "${kernel_dst}/"; then
+                echo -e "${YELLOW}⚠ Could not copy ${ucode} into EFI image (non-fatal)${NC}"
+            else
+                echo -e "${GREEN}✓ Copied ${ucode}${NC}"
+            fi
+        fi
+    done
 }
 
 # Function to fix EFI boot structure for systemd-boot
@@ -549,13 +620,29 @@ create_efi_image() {
     
     # Create archiso directory if it doesn't exist
     mkdir -p "${efi_archiso_dir}"
-    
+
     # Create a temporary mount point
     local efi_mount=$(mktemp -d)
-    
-    # Create FAT32 filesystem image (400MB to fit 224M initramfs + kernel + boot files)
-    echo -e "${BLUE}Creating FAT32 filesystem image (400MB)...${NC}"
-    dd if=/dev/zero of="${efi_img_path}" bs=1M count=400 status=progress
+
+    # Calculate required image size from actual file sizes + 30% FAT32 overhead.
+    # This prevents the silent truncation bug: the original Arch efiboot.img is
+    # sized for the stock Arch kernel/initramfs (~100MB). Our initramfs is ~240MB.
+    # Trying to update the old image in-place causes ENOSPC → truncated files →
+    # "Error loading EFI binary: Unsupported" from the EFI firmware.
+    local _content_bytes=0
+    for _f in "${efi_boot_dir}/BOOTx64.EFI" "${efi_boot_dir}/BOOTIA32.EFI" \
+               "arch/boot/x86_64/vmlinuz-linux" \
+               "arch/boot/x86_64/initramfs-linux.img" \
+               "arch/boot/x86_64/amd-ucode.img" \
+               "arch/boot/x86_64/intel-ucode.img"; do
+        [ -f "${_f}" ] && _content_bytes=$((_content_bytes + $(stat -c%s "${_f}")))
+    done
+    # Add 32MB for EFI shells, loader config, FAT metadata; then 30% overhead buffer
+    local _efi_size_mb=$(((_content_bytes / 1048576) + 32))
+    _efi_size_mb=$((_efi_size_mb + _efi_size_mb / 3))
+    [ "${_efi_size_mb}" -lt 64 ] && _efi_size_mb=64
+    echo -e "${BLUE}Creating FAT32 filesystem image (${_efi_size_mb}MB for $((_content_bytes / 1048576))MB content)...${NC}"
+    dd if=/dev/zero of="${efi_img_path}" bs=1M count="${_efi_size_mb}" status=progress
     
     # Format as FAT32 with label
     ${mkfs_cmd} -F 32 -n "ARCHISO_EFI" "${efi_img_path}" >/dev/null 2>&1 || {
@@ -590,12 +677,17 @@ create_efi_image() {
     # Copy loader configuration
     copy_loader_config "${efi_mount}" "${loader_dir}" "${loader_entries_dir}"
     
-    # Copy kernel/initramfs files
-    copy_kernel_files "${efi_mount}" "arch/boot/x86_64"
-    
+    # Copy kernel/initramfs files (REQUIRED — fail loudly if this fails)
+    if ! copy_kernel_files "${efi_mount}" "arch/boot/x86_64"; then
+        echo -e "${RED}FATAL: Failed to copy kernel files into EFI image${NC}" >&2
+        unmount_efi_image "${efi_mount}"
+        rm -f "${efi_img_path}"
+        return 1
+    fi
+
     # Fix EFI boot structure for systemd-boot
     fix_efi_boot_structure "${efi_mount}"
-    
+
     # Unmount the image
     unmount_efi_image "${efi_mount}"
     
@@ -613,66 +705,33 @@ create_efi_image() {
     fi
 }
 
-# First, check if original efiboot.img exists from extracted ISO
+# ── ALWAYS recreate efiboot.img from scratch ─────────────────────────────────
+# ROOT CAUSE OF "Error loading EFI binary: Unsupported":
+#   The original Arch ISO's efiboot.img is sized for the stock Arch kernel and
+#   initramfs (~100MB total). Our linux-jarvisos initramfs is ~240MB. Trying to
+#   update the existing image in-place causes silent ENOSPC: cp fails but
+#   "|| true" swallowed the error, leaving a 4.5MB truncated vmlinuz (should be
+#   16MB). The EFI firmware refuses to load a corrupt PE/COFF image → "Unsupported".
+# FIX: Always delete and recreate efiboot.img with dynamically calculated sizing.
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}Recreating EFI boot image (fresh, correctly sized)...${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
 if [ -f "${EFI_IMG_PATH}" ]; then
-    echo -e "${GREEN}✓ Found existing EFI boot image: ${EFI_IMG_PATH}${NC}"
-    
-    # Verify efiboot.img contains boot menu configuration and kernel/initramfs
-    EFI_MOUNT=$(mount_efi_image "${EFI_IMG_PATH}")
-    EFI_HAS_LOADER=false
-    EFI_HAS_KERNEL=false
-    
-    if [ -n "${EFI_MOUNT}" ] && [ -d "${EFI_MOUNT}" ]; then
-        VERIFY_RESULT=$(verify_efi_image "${EFI_IMG_PATH}" "${EFI_MOUNT}")
-        EFI_HAS_LOADER=$(echo "${VERIFY_RESULT}" | cut -d' ' -f1)
-        EFI_HAS_KERNEL=$(echo "${VERIFY_RESULT}" | cut -d' ' -f2)
-        
-        if [ "${EFI_HAS_LOADER}" = "true" ]; then
-            echo -e "${GREEN}✓ EFI boot image contains boot menu configuration${NC}"
-        else
-            echo -e "${YELLOW}⚠ EFI boot image missing boot menu configuration, will add it...${NC}"
-        fi
-        
-        if [ "${EFI_HAS_KERNEL}" = "true" ]; then
-            echo -e "${GREEN}✓ EFI boot image contains kernel/initramfs files${NC}"
-        else
-            echo -e "${YELLOW}⚠ EFI boot image missing kernel/initramfs files, will add them...${NC}"
-        fi
-        
-        unmount_efi_image "${EFI_MOUNT}"
-    else
-        echo -e "${YELLOW}⚠ Could not mount efiboot.img for verification, will ensure all files are added...${NC}"
-    fi
-    
-    # If loader files or kernel/initramfs are missing, copy them into efiboot.img
-    if [ "${EFI_HAS_LOADER}" = "false" ] || [ "${EFI_HAS_KERNEL}" = "false" ]; then
-        EFI_MOUNT=$(mount_efi_image "${EFI_IMG_PATH}")
-        
-        if [ -n "${EFI_MOUNT}" ] && [ -d "${EFI_MOUNT}" ]; then
-            # Copy loader configuration if missing
-            if [ "${EFI_HAS_LOADER}" = "false" ]; then
-                copy_loader_config "${EFI_MOUNT}" "${LOADER_DIR}" "${LOADER_ENTRIES_DIR}"
-            fi
-            
-            # Copy kernel/initramfs files if missing
-            if [ "${EFI_HAS_KERNEL}" = "false" ]; then
-                copy_kernel_files "${EFI_MOUNT}" "arch/boot/x86_64"
-            fi
-            
-            # Fix EFI boot structure for systemd-boot (copy loader files to root level and update paths)
-            fix_efi_boot_structure "${EFI_MOUNT}"
-            
-            unmount_efi_image "${EFI_MOUNT}"
-            echo -e "${GREEN}✓ Updated EFI boot image${NC}"
-        else
-            echo -e "${YELLOW}Warning: Could not mount efiboot.img to add files${NC}"
-        fi
-    fi
-# If not found, create new one from EFI/BOOT/ directory (fallback scenario)
-elif [ ! -f "${EFI_IMG_PATH}" ] && [ -d "${EFI_BOOT_DIR}" ]; then
-    if ! create_efi_image "${EFI_IMG_PATH}" "${EFI_BOOT_DIR}" "${LOADER_DIR}" "${LOADER_ENTRIES_DIR}" "${EFI_ARCHISO_DIR}"; then
-        exit 1
-    fi
+    echo -e "${BLUE}Removing existing efiboot.img (was sized for stock Arch kernel)...${NC}"
+    rm -f "${EFI_IMG_PATH}"
+fi
+
+mkdir -p "${EFI_ARCHISO_DIR}"
+
+if [ ! -d "${EFI_BOOT_DIR}" ]; then
+    echo -e "${RED}FATAL: ${EFI_BOOT_DIR} not found — EFI boot files missing from ISO extract${NC}" >&2
+    exit 1
+fi
+
+if ! create_efi_image "${EFI_IMG_PATH}" "${EFI_BOOT_DIR}" "${LOADER_DIR}" "${LOADER_ENTRIES_DIR}" "${EFI_ARCHISO_DIR}"; then
+    echo -e "${RED}FATAL: Failed to create EFI boot image${NC}" >&2
+    exit 1
 fi
 
 # Find EFI boot image (case-insensitive search)
@@ -744,6 +803,37 @@ for cfg in boot/syslinux/archiso_sys-linux.cfg boot/syslinux/archiso_pxe-linux.c
 done
 echo -e "${GREEN}✓ Rebranded syslinux boot entries${NC}"
 
+# Rebrand GRUB loopback.cfg (used when booting ISO from GRUB loopback)
+if [ -f "boot/grub/loopback.cfg" ]; then
+    sed -i 's/Arch Linux install medium/JarvisOS/g' "boot/grub/loopback.cfg"
+    sed -i 's/Arch Linux/JarvisOS/g' "boot/grub/loopback.cfg"
+    echo -e "${GREEN}✓ Rebranded GRUB loopback.cfg${NC}"
+fi
+# Rebrand any other grub.cfg files
+for cfg in boot/grub/grub.cfg boot/grub/grubenv; do
+    if [ -f "${cfg}" ]; then
+        sed -i 's/Arch Linux install medium/JarvisOS/g' "${cfg}" 2>/dev/null || true
+        sed -i 's/Arch Linux/JarvisOS/g' "${cfg}" 2>/dev/null || true
+    fi
+done
+
+# CRITICAL FIX: Update syslinux boot parameters to use archisolabel
+# The original Arch ISO uses archisosearchuuid with a timestamp UUID.
+# When we rebuild the ISO with xorriso, it gets a NEW UUID, so the old one
+# no longer matches. This prevents archiso from finding & mounting the boot
+# device at /run/archiso/bootmnt/, which breaks Calamares unpackfs.
+# Fix: replace archisosearchuuid=<old> with archisolabel=<our-label>.
+echo -e "${BLUE}Fixing syslinux boot parameters (archisosearchuuid → archisolabel)...${NC}"
+for cfg in boot/syslinux/archiso_sys-linux.cfg boot/syslinux/archiso_pxe-linux.cfg; do
+    if [ -f "${cfg}" ]; then
+        # Replace archisosearchuuid=<anything> with archisolabel=JARVISOS_202601
+        sed -i "s/archisosearchuuid=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
+        # Also normalise any existing archisolabel to our volume ID
+        sed -i "s/archisolabel=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
+        echo -e "${GREEN}✓ Fixed $(basename "${cfg}")${NC}"
+    fi
+done
+
 # CRITICAL FIX: Update boot entry paths to match actual file locations
 echo -e "${BLUE}Fixing boot entry paths...${NC}"
 
@@ -767,8 +857,8 @@ fi
 
 # CRITICAL FIX: Create proper UUID file
 echo -e "${BLUE}Fixing UUID file...${NC}"
-# Remove all old UUID files (especially timestamp-based ones)
-find boot/ -name "2026-*.uuid" -delete 2>/dev/null || true
+# Remove ALL old UUID files (any year pattern, not just 2026)
+find boot/ -name "*.uuid" -delete 2>/dev/null || true
 # Create UUID file with volume label
 echo "${JARVISOS_VOLID}" > "boot/${JARVISOS_VOLID}.uuid"
 echo -e "${GREEN}✓ Created boot/${JARVISOS_VOLID}.uuid${NC}"
@@ -850,7 +940,7 @@ if [ -f "${EFI_IMG_PATH}" ]; then
 fi
 
 # Update UUID files - use volume label instead of timestamp
-find boot/ -name "2026-*.uuid" -delete 2>/dev/null || true
+find boot/ -name "*.uuid" -delete 2>/dev/null || true
 echo "${JARVISOS_VOLID}" > "boot/${JARVISOS_VOLID}.uuid"
 echo -e "${GREEN}✓ Created boot/${JARVISOS_VOLID}.uuid${NC}"
 

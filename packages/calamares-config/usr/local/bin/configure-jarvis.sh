@@ -1,74 +1,55 @@
 #!/bin/bash
 # Post-installation JARVIS configuration script
-# Called by Calamares shellprocess after OS installation.
-# Configures voice features, creates XDG autostart, removes live-ISO cruft.
+# Called by Calamares shellprocess with dontChroot: true.
+# $1 = target root path (@@ROOT@@ substituted by Calamares)
+#
+# Configures SDDM, creates XDG autostart, removes live-ISO cruft.
+# Voice settings are deferred to first-boot JARVIS welcome wizard.
 
 set -e
 
-JARVIS_ENV="/usr/lib/jarvis/.env"
+ROOT="${1:?ERROR: target root path not provided}"
+
+if [ ! -d "${ROOT}" ]; then
+    echo "ERROR: Target root directory does not exist: ${ROOT}" >&2
+    exit 1
+fi
+
+echo "Configuring JARVIS for target: ${ROOT}"
 
 # ---------------------------------------------------------------------------
-# Helper: update a key=value in .env (create if missing)
+# Remove stock linux kernel boot files (linux-jarvisos is the installed kernel)
 # ---------------------------------------------------------------------------
-update_env() {
-    local key=$1
-    local value=$2
+# The squashfs rootfs contains both the stock 'linux' and 'linux-jarvisos'
+# packages.  After Calamares installs, only linux-jarvisos should be active.
+# Remove stock linux boot files so the bootloader and mkinitcpio only see
+# linux-jarvisos, preventing confusion and wasted /boot space.
+echo "Removing stock linux kernel files (linux-jarvisos is the installed kernel)..."
+rm -f "${ROOT}/boot/vmlinuz-linux" 2>/dev/null || true
+rm -f "${ROOT}/boot/initramfs-linux.img" 2>/dev/null || true
+rm -f "${ROOT}/boot/initramfs-linux-fallback.img" 2>/dev/null || true
+rm -f "${ROOT}/etc/mkinitcpio.d/linux.preset" 2>/dev/null || true
 
-    if [ -f "${JARVIS_ENV}" ]; then
-        if grep -q "^${key}=" "${JARVIS_ENV}"; then
-            sed -i "s|^${key}=.*|${key}=${value}|" "${JARVIS_ENV}"
-        else
-            echo "${key}=${value}" >> "${JARVIS_ENV}"
+# Remove stock linux bootloader entries if using systemd-boot
+# (the bootloader module may have created entries for both kernels)
+if [ -d "${ROOT}/boot/loader/entries" ]; then
+    for entry in "${ROOT}"/boot/loader/entries/*linux.conf; do
+        # Only remove entries for stock linux, not linux-jarvisos
+        if [ -f "${entry}" ] && grep -q "vmlinuz-linux$" "${entry}" 2>/dev/null; then
+            echo "  Removing stock linux boot entry: $(basename "${entry}")"
+            rm -f "${entry}"
         fi
-    else
-        echo "${key}=${value}" > "${JARVIS_ENV}"
-    fi
-}
-
-# ---------------------------------------------------------------------------
-# Read Calamares voice selections
-# ---------------------------------------------------------------------------
-VOICE_OUTPUT=false
-VOICE_RECOGNITION=false
-
-if [ -f "/tmp/calamares-global-storage.yaml" ]; then
-    grep -q "voice-output" "/tmp/calamares-global-storage.yaml" && VOICE_OUTPUT=true
-    grep -q "voice-recognition" "/tmp/calamares-global-storage.yaml" && VOICE_RECOGNITION=true
+    done
 fi
-
-echo "Configuring JARVIS..."
-echo "  Voice Output: ${VOICE_OUTPUT}"
-echo "  Voice Recognition: ${VOICE_RECOGNITION}"
-
-# ---------------------------------------------------------------------------
-# Apply voice settings
-# ---------------------------------------------------------------------------
-if [ "${VOICE_OUTPUT}" = "true" ]; then
-    update_env "ENABLE_TTS" "True"
-    update_env "OUTPUT_MODE" "voice"
-else
-    update_env "ENABLE_TTS" "False"
-    update_env "OUTPUT_MODE" "text"
-fi
-
-if [ "${VOICE_RECOGNITION}" = "true" ]; then
-    update_env "ENABLE_STT" "True"
-    update_env "VOICE_ACTIVATION" "True"
-else
-    update_env "ENABLE_STT" "False"
-    update_env "VOICE_ACTIVATION" "False"
-fi
-
-chown jarvis:jarvis "${JARVIS_ENV}" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Remove live-ISO autologin
 # ---------------------------------------------------------------------------
 echo "Removing live ISO autologin configuration..."
-rm -f /etc/sddm.conf.d/autologin.conf 2>/dev/null || true
+rm -f "${ROOT}/etc/sddm.conf.d/autologin.conf" 2>/dev/null || true
 
-mkdir -p /etc/sddm.conf.d
-cat > /etc/sddm.conf.d/jarvisos.conf << 'SDDM_CONF'
+mkdir -p "${ROOT}/etc/sddm.conf.d"
+cat > "${ROOT}/etc/sddm.conf.d/jarvisos.conf" << 'SDDM_CONF'
 [General]
 DisplayServer=wayland
 Numlock=on
@@ -86,9 +67,9 @@ SDDM_CONF
 # ---------------------------------------------------------------------------
 # Ensure XDG autostart for JARVIS exists (should already be there from build)
 # ---------------------------------------------------------------------------
-mkdir -p /etc/xdg/autostart
-if [ ! -f /etc/xdg/autostart/jarvis.desktop ]; then
-    cat > /etc/xdg/autostart/jarvis.desktop << 'JDESKTOP'
+mkdir -p "${ROOT}/etc/xdg/autostart"
+if [ ! -f "${ROOT}/etc/xdg/autostart/jarvis.desktop" ]; then
+    cat > "${ROOT}/etc/xdg/autostart/jarvis.desktop" << 'JDESKTOP'
 [Desktop Entry]
 Type=Application
 Name=JARVIS AI Assistant
@@ -101,13 +82,39 @@ Hidden=false
 NoDisplay=true
 X-KDE-autostart-phase=2
 JDESKTOP
-    chmod 644 /etc/xdg/autostart/jarvis.desktop
+    chmod 644 "${ROOT}/etc/xdg/autostart/jarvis.desktop"
 fi
 
-# If voice is completely disabled, hide the autostart
-if [ "${VOICE_OUTPUT}" = "false" ] && [ "${VOICE_RECOGNITION}" = "false" ]; then
-    # Keep the desktop file but hide it — user can re-enable via settings
-    sed -i 's/^Hidden=false/Hidden=true/' /etc/xdg/autostart/jarvis.desktop 2>/dev/null || true
+# ---------------------------------------------------------------------------
+# Create first-boot welcome terminal autostart
+# ---------------------------------------------------------------------------
+echo "Creating JARVIS welcome autostart..."
+
+# Detect the username Calamares created — look for real users in target /home.
+# Filter out "liveuser" (live-ISO account) and pick the first real user.
+INSTALL_USER=""
+INSTALL_USER=$(find "${ROOT}/home/" -maxdepth 1 -mindepth 1 -type d \
+    ! -name "liveuser" -printf '%f\n' 2>/dev/null | sort | head -1)
+
+if [ -n "${INSTALL_USER}" ]; then
+    AUTOSTART_DIR="${ROOT}/home/${INSTALL_USER}/.config/autostart"
+    mkdir -p "${AUTOSTART_DIR}"
+    cat > "${AUTOSTART_DIR}/jarvis-welcome.desktop" << 'WELCOMEDESKTOP'
+[Desktop Entry]
+Type=Application
+Name=JARVIS Setup
+Comment=First-boot JARVIS AI setup wizard
+Exec=konsole -e /usr/local/bin/jarvis-welcome.sh
+Icon=utilities-terminal
+Terminal=false
+StartupNotify=true
+X-KDE-autostart-phase=2
+WELCOMEDESKTOP
+    chmod 644 "${AUTOSTART_DIR}/jarvis-welcome.desktop"
+    chown -R "${INSTALL_USER}:${INSTALL_USER}" "${ROOT}/home/${INSTALL_USER}/.config"
+    echo "  Welcome autostart created for user: ${INSTALL_USER}"
+else
+    echo "  Warning: Could not determine installed user — welcome autostart skipped"
 fi
 
 echo "JARVIS configuration complete."
