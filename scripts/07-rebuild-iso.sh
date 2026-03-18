@@ -430,34 +430,43 @@ copy_kernel_files() {
     local kernel_dst="${efi_mount}/EFI/archiso/boot/x86_64"
     echo -e "${BLUE}Copying kernel/initramfs files into EFI boot image...${NC}"
     sudo mkdir -p "${kernel_dst}"
-    
-    # Copy kernel
-    if [ -f "${kernel_src}/vmlinuz-linux" ]; then
-        sudo cp "${kernel_src}/vmlinuz-linux" "${kernel_dst}/" || true
-        echo -e "${GREEN}✓ Copied vmlinuz-linux${NC}"
+
+    # Copy kernel — REQUIRED, fail hard if this fails (truncated vmlinuz → "Unsupported")
+    if [ ! -f "${kernel_src}/vmlinuz-linux" ]; then
+        echo -e "${RED}FATAL: vmlinuz-linux not found at ${kernel_src}${NC}" >&2
+        return 1
     fi
-    
-    # Copy initramfs
-    if [ -f "${kernel_src}/initramfs-linux.img" ]; then
-        sudo cp "${kernel_src}/initramfs-linux.img" "${kernel_dst}/" || true
-        echo -e "${GREEN}✓ Copied initramfs-linux.img${NC}"
+    if ! sudo cp "${kernel_src}/vmlinuz-linux" "${kernel_dst}/"; then
+        echo -e "${RED}FATAL: Failed to copy vmlinuz-linux into EFI image (out of space?)${NC}" >&2
+        return 1
     fi
-    
-    # Copy fallback initramfs if it exists
-    if [ -f "${kernel_src}/initramfs-linux-fallback.img" ]; then
-        sudo cp "${kernel_src}/initramfs-linux-fallback.img" "${kernel_dst}/" || true
-        echo -e "${GREEN}✓ Copied initramfs-linux-fallback.img${NC}"
+    echo -e "${GREEN}✓ Copied vmlinuz-linux ($(du -h "${kernel_src}/vmlinuz-linux" | cut -f1))${NC}"
+
+    # Copy initramfs — REQUIRED, fail hard if this fails
+    if [ ! -f "${kernel_src}/initramfs-linux.img" ]; then
+        echo -e "${RED}FATAL: initramfs-linux.img not found at ${kernel_src}${NC}" >&2
+        return 1
     fi
-    
-    # Copy microcode updates if they exist
-    if [ -f "${kernel_src}/amd-ucode.img" ]; then
-        sudo cp "${kernel_src}/amd-ucode.img" "${kernel_dst}/" || true
-        echo -e "${GREEN}✓ Copied amd-ucode.img${NC}"
+    if ! sudo cp "${kernel_src}/initramfs-linux.img" "${kernel_dst}/"; then
+        echo -e "${RED}FATAL: Failed to copy initramfs-linux.img into EFI image (out of space?)${NC}" >&2
+        return 1
     fi
-    if [ -f "${kernel_src}/intel-ucode.img" ]; then
-        sudo cp "${kernel_src}/intel-ucode.img" "${kernel_dst}/" || true
-        echo -e "${GREEN}✓ Copied intel-ucode.img${NC}"
-    fi
+    echo -e "${GREEN}✓ Copied initramfs-linux.img ($(du -h "${kernel_src}/initramfs-linux.img" | cut -f1))${NC}"
+
+    # NOTE: fallback initramfs intentionally NOT copied into efiboot.img.
+    # No boot entry references it, and at ~240MB it would require a much larger image.
+    # The fallback is available in arch/boot/x86_64/ on the ISO filesystem for recovery.
+
+    # Copy microcode updates (optional)
+    for ucode in amd-ucode.img intel-ucode.img; do
+        if [ -f "${kernel_src}/${ucode}" ]; then
+            if ! sudo cp "${kernel_src}/${ucode}" "${kernel_dst}/"; then
+                echo -e "${YELLOW}⚠ Could not copy ${ucode} into EFI image (non-fatal)${NC}"
+            else
+                echo -e "${GREEN}✓ Copied ${ucode}${NC}"
+            fi
+        fi
+    done
 }
 
 # Function to fix EFI boot structure for systemd-boot
@@ -611,13 +620,29 @@ create_efi_image() {
     
     # Create archiso directory if it doesn't exist
     mkdir -p "${efi_archiso_dir}"
-    
+
     # Create a temporary mount point
     local efi_mount=$(mktemp -d)
-    
-    # Create FAT32 filesystem image (400MB to fit 224M initramfs + kernel + boot files)
-    echo -e "${BLUE}Creating FAT32 filesystem image (400MB)...${NC}"
-    dd if=/dev/zero of="${efi_img_path}" bs=1M count=400 status=progress
+
+    # Calculate required image size from actual file sizes + 30% FAT32 overhead.
+    # This prevents the silent truncation bug: the original Arch efiboot.img is
+    # sized for the stock Arch kernel/initramfs (~100MB). Our initramfs is ~240MB.
+    # Trying to update the old image in-place causes ENOSPC → truncated files →
+    # "Error loading EFI binary: Unsupported" from the EFI firmware.
+    local _content_bytes=0
+    for _f in "${efi_boot_dir}/BOOTx64.EFI" "${efi_boot_dir}/BOOTIA32.EFI" \
+               "arch/boot/x86_64/vmlinuz-linux" \
+               "arch/boot/x86_64/initramfs-linux.img" \
+               "arch/boot/x86_64/amd-ucode.img" \
+               "arch/boot/x86_64/intel-ucode.img"; do
+        [ -f "${_f}" ] && _content_bytes=$((_content_bytes + $(stat -c%s "${_f}")))
+    done
+    # Add 32MB for EFI shells, loader config, FAT metadata; then 30% overhead buffer
+    local _efi_size_mb=$(((_content_bytes / 1048576) + 32))
+    _efi_size_mb=$((_efi_size_mb + _efi_size_mb / 3))
+    [ "${_efi_size_mb}" -lt 64 ] && _efi_size_mb=64
+    echo -e "${BLUE}Creating FAT32 filesystem image (${_efi_size_mb}MB for $((_content_bytes / 1048576))MB content)...${NC}"
+    dd if=/dev/zero of="${efi_img_path}" bs=1M count="${_efi_size_mb}" status=progress
     
     # Format as FAT32 with label
     ${mkfs_cmd} -F 32 -n "ARCHISO_EFI" "${efi_img_path}" >/dev/null 2>&1 || {
@@ -652,12 +677,17 @@ create_efi_image() {
     # Copy loader configuration
     copy_loader_config "${efi_mount}" "${loader_dir}" "${loader_entries_dir}"
     
-    # Copy kernel/initramfs files
-    copy_kernel_files "${efi_mount}" "arch/boot/x86_64"
-    
+    # Copy kernel/initramfs files (REQUIRED — fail loudly if this fails)
+    if ! copy_kernel_files "${efi_mount}" "arch/boot/x86_64"; then
+        echo -e "${RED}FATAL: Failed to copy kernel files into EFI image${NC}" >&2
+        unmount_efi_image "${efi_mount}"
+        rm -f "${efi_img_path}"
+        return 1
+    fi
+
     # Fix EFI boot structure for systemd-boot
     fix_efi_boot_structure "${efi_mount}"
-    
+
     # Unmount the image
     unmount_efi_image "${efi_mount}"
     
@@ -675,64 +705,33 @@ create_efi_image() {
     fi
 }
 
-# First, check if original efiboot.img exists from extracted ISO
+# ── ALWAYS recreate efiboot.img from scratch ─────────────────────────────────
+# ROOT CAUSE OF "Error loading EFI binary: Unsupported":
+#   The original Arch ISO's efiboot.img is sized for the stock Arch kernel and
+#   initramfs (~100MB total). Our linux-jarvisos initramfs is ~240MB. Trying to
+#   update the existing image in-place causes silent ENOSPC: cp fails but
+#   "|| true" swallowed the error, leaving a 4.5MB truncated vmlinuz (should be
+#   16MB). The EFI firmware refuses to load a corrupt PE/COFF image → "Unsupported".
+# FIX: Always delete and recreate efiboot.img with dynamically calculated sizing.
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}Recreating EFI boot image (fresh, correctly sized)...${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
 if [ -f "${EFI_IMG_PATH}" ]; then
-    echo -e "${GREEN}✓ Found existing EFI boot image: ${EFI_IMG_PATH}${NC}"
-    
-    # Verify efiboot.img contains boot menu configuration and kernel/initramfs
-    EFI_MOUNT=$(mount_efi_image "${EFI_IMG_PATH}")
-    EFI_HAS_LOADER=false
-    EFI_HAS_KERNEL=false
-    
-    if [ -n "${EFI_MOUNT}" ] && [ -d "${EFI_MOUNT}" ]; then
-        VERIFY_RESULT=$(verify_efi_image "${EFI_IMG_PATH}" "${EFI_MOUNT}")
-        EFI_HAS_LOADER=$(echo "${VERIFY_RESULT}" | cut -d' ' -f1)
-        EFI_HAS_KERNEL=$(echo "${VERIFY_RESULT}" | cut -d' ' -f2)
-        
-        if [ "${EFI_HAS_LOADER}" = "true" ]; then
-            echo -e "${GREEN}✓ EFI boot image contains boot menu configuration${NC}"
-        else
-            echo -e "${YELLOW}⚠ EFI boot image missing boot menu configuration, will add it...${NC}"
-        fi
-        
-        if [ "${EFI_HAS_KERNEL}" = "true" ]; then
-            echo -e "${GREEN}✓ EFI boot image contains kernel/initramfs files${NC}"
-        else
-            echo -e "${YELLOW}⚠ EFI boot image missing kernel/initramfs files, will add them...${NC}"
-        fi
-        
-        unmount_efi_image "${EFI_MOUNT}"
-    else
-        echo -e "${YELLOW}⚠ Could not mount efiboot.img for verification, will ensure all files are added...${NC}"
-    fi
-    
-    # ALWAYS update the EFI boot image with our rebuilt kernel/initramfs and
-    # fix boot entries. Even if the original image already has kernel files,
-    # they are the ORIGINAL Arch ones — not our custom-built versions with
-    # all hardware modules and the archiso hook configured for our rootfs.
-    echo -e "${BLUE}Updating EFI boot image with rebuilt kernel and boot entries...${NC}"
-    EFI_MOUNT=$(mount_efi_image "${EFI_IMG_PATH}")
+    echo -e "${BLUE}Removing existing efiboot.img (was sized for stock Arch kernel)...${NC}"
+    rm -f "${EFI_IMG_PATH}"
+fi
 
-    if [ -n "${EFI_MOUNT}" ] && [ -d "${EFI_MOUNT}" ]; then
-        # Copy loader configuration
-        copy_loader_config "${EFI_MOUNT}" "${LOADER_DIR}" "${LOADER_ENTRIES_DIR}"
+mkdir -p "${EFI_ARCHISO_DIR}"
 
-        # ALWAYS copy our rebuilt kernel/initramfs (overwrite originals)
-        copy_kernel_files "${EFI_MOUNT}" "arch/boot/x86_64"
+if [ ! -d "${EFI_BOOT_DIR}" ]; then
+    echo -e "${RED}FATAL: ${EFI_BOOT_DIR} not found — EFI boot files missing from ISO extract${NC}" >&2
+    exit 1
+fi
 
-        # Fix EFI boot structure for systemd-boot (copy loader files to root level and update paths)
-        fix_efi_boot_structure "${EFI_MOUNT}"
-
-        unmount_efi_image "${EFI_MOUNT}"
-        echo -e "${GREEN}✓ Updated EFI boot image${NC}"
-    else
-        echo -e "${YELLOW}Warning: Could not mount efiboot.img to update files${NC}"
-    fi
-# If not found, create new one from EFI/BOOT/ directory (fallback scenario)
-elif [ ! -f "${EFI_IMG_PATH}" ] && [ -d "${EFI_BOOT_DIR}" ]; then
-    if ! create_efi_image "${EFI_IMG_PATH}" "${EFI_BOOT_DIR}" "${LOADER_DIR}" "${LOADER_ENTRIES_DIR}" "${EFI_ARCHISO_DIR}"; then
-        exit 1
-    fi
+if ! create_efi_image "${EFI_IMG_PATH}" "${EFI_BOOT_DIR}" "${LOADER_DIR}" "${LOADER_ENTRIES_DIR}" "${EFI_ARCHISO_DIR}"; then
+    echo -e "${RED}FATAL: Failed to create EFI boot image${NC}" >&2
+    exit 1
 fi
 
 # Find EFI boot image (case-insensitive search)

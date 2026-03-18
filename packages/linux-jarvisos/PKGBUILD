@@ -56,6 +56,13 @@ prepare() {
 
     echo "  -> Applying base kernel config options..."
 
+    # EFI stub — REQUIRED for systemd-boot EFISTUB to load this kernel on UEFI.
+    # Without CONFIG_EFI_STUB=y the vmlinuz is not a valid PE/COFF image and
+    # the firmware returns EFI_UNSUPPORTED → "Error loading EFI binary: Unsupported"
+    scripts/config --enable CONFIG_EFI
+    scripts/config --enable CONFIG_EFI_STUB
+    scripts/config --enable CONFIG_EFI_HANDOVER_PROTOCOL
+
     # Security and audit (needed by ELEVATED/DANGEROUS policy tiers)
     scripts/config --enable CONFIG_SECURITY
     scripts/config --enable CONFIG_AUDIT
