@@ -20,6 +20,9 @@ ISO_FILE := $(BUILD_DEPS_DIR)/$(ISO_FILE)
 # ISO_EXTRACT_DIR is relative to BUILD_DIR (not PROJECT_ROOT)
 ISO_EXTRACT_DIR := $(BUILD_DIR)$(ISO_EXTRACT_DIR)
 
+# Parallelism — override with: make JOBS=8 <target>  or  make -j8 <target>
+JOBS ?= $(shell nproc)
+
 # Colors
 RED := \033[0;31m
 GREEN := \033[0;32m
@@ -50,6 +53,10 @@ help:
 	@echo "  $(GREEN)make status$(NC) - Show build status"
 	@echo "  $(GREEN)make list$(NC)   - List available scripts"
 	@echo "  $(GREEN)make clean$(NC)  - Clean build artifacts"
+	@echo ""
+	@echo "Options:"
+	@echo "  $(GREEN)JOBS=N$(NC)       - Parallel threads for kernel build and squashfs (default: nproc=$(JOBS))"
+	@echo "  Example: make JOBS=8 step3b"
 	@echo ""
 	@echo "$(YELLOW)Quick start:$(NC)"
 	@echo "  1. make prereq   (install host tools)"
@@ -149,7 +156,7 @@ step3b:
 		echo "$(RED)Error: Script not found: 03b-build-kernel.sh$(NC)"; \
 		exit 1; \
 	fi
-	@bash $(SCRIPTS_DIR)/03b-build-kernel.sh
+	@MAKEFLAGS="-j$(JOBS)" bash $(SCRIPTS_DIR)/03b-build-kernel.sh
 	@echo "$(GREEN)✓ Step 3b complete$(NC)"
 
 # Step 4: Bake JARVIS
@@ -179,7 +186,7 @@ step6:
 		echo "$(RED)Error: Script not found: 06-squash-fs.sh$(NC)"; \
 		exit 1; \
 	fi
-	@bash $(SCRIPTS_DIR)/06-squash-fs.sh $(BUILD_DIR)
+	@JOBS=$(JOBS) bash $(SCRIPTS_DIR)/06-squash-fs.sh $(BUILD_DIR)
 	@echo "$(GREEN)✓ Step 6 complete$(NC)"
 
 # Step 7: Rebuild ISO
@@ -235,10 +242,10 @@ rest:
 	if [ $$SKIP1 -eq 0 ]; then echo "$(BLUE)Running step 1...$(NC)"; bash $(SCRIPTS_DIR)/01-extract-iso.sh $(ISO_FILE) $(BUILD_DIR) && RAN=1 || exit 1; fi; \
 	if [ $$SKIP2 -eq 0 ]; then echo "$(BLUE)Running step 2...$(NC)"; bash $(SCRIPTS_DIR)/02-unsquash-fs.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
 	if [ $$SKIP3 -eq 0 ]; then echo "$(BLUE)Running step 3...$(NC)"; bash $(SCRIPTS_DIR)/03-bake-wayland.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
-	if [ $$SKIP3B -eq 0 ]; then echo "$(BLUE)Running step 3b...$(NC)"; bash $(SCRIPTS_DIR)/03b-build-kernel.sh && RAN=1 || exit 1; fi; \
+	if [ $$SKIP3B -eq 0 ]; then echo "$(BLUE)Running step 3b...$(NC)"; MAKEFLAGS="-j$(JOBS)" bash $(SCRIPTS_DIR)/03b-build-kernel.sh && RAN=1 || exit 1; fi; \
 	if [ $$SKIP4 -eq 0 ]; then echo "$(BLUE)Running step 4...$(NC)"; bash $(SCRIPTS_DIR)/04-bake-jarvis.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
 	if [ $$SKIP5 -eq 0 ]; then echo "$(BLUE)Running step 5...$(NC)"; bash $(SCRIPTS_DIR)/05-bake-calamares.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
-	if [ $$SKIP6 -eq 0 ]; then echo "$(BLUE)Running step 6...$(NC)"; bash $(SCRIPTS_DIR)/06-squash-fs.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
+	if [ $$SKIP6 -eq 0 ]; then echo "$(BLUE)Running step 6...$(NC)"; JOBS=$(JOBS) bash $(SCRIPTS_DIR)/06-squash-fs.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
 	if [ $$SKIP7 -eq 0 ]; then echo "$(BLUE)Running step 7...$(NC)"; bash $(SCRIPTS_DIR)/07-rebuild-iso.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
 	if [ $$RAN -eq 0 ]; then \
 		echo "$(GREEN)All steps already completed! Nothing to do.$(NC)"; \

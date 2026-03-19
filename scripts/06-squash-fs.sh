@@ -137,9 +137,11 @@ echo -e "${BLUE}Rootfs size: ${ROOTFS_SIZE}${NC}"
 # CRITICAL: Do NOT pipe through tee — with pipefail off the tee mask mksquashfs failures.
 # Instead, redirect stderr+stdout to the log and stream it with tail -f in the background.
 SQUASHFS_LOG="${BUILD_DIR}/squashfs-build.log"
+SQUASHFS_JOBS="${JOBS:-$(nproc)}"
 sudo mksquashfs "${SQUASHFS_ROOTFS}" "${NEW_SQUASHFS}" \
     -comp xz \
     -b 1M \
+    -processors "${SQUASHFS_JOBS}" \
     -noappend \
     -e boot/grub/grubenv \
     -e proc \
