@@ -462,12 +462,21 @@ if ! sudo test -f "${SQUASHFS_ROOTFS}${INSTALL_PATH}"; then
 fi
 
 echo -e "${BLUE}Installing package in chroot...${NC}"
+# Remove cachyos-calamares first — it owns the same config files we're about to install.
+# --noconfirm --nodeps so it doesn't drag in reverse-deps or prompt.
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    if pacman -Q cachyos-calamares >/dev/null 2>&1; then
+        echo 'Removing cachyos-calamares (conflicts with our calamares-config)...'
+        pacman -R --noconfirm --nodeps cachyos-calamares 2>/dev/null || true
+    fi
+" || true
+
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     echo 'Checking if package file exists in chroot...'
     ls -lh ${INSTALL_PATH} || echo 'Package file not found!'
     echo ''
     echo 'Installing package...'
-    pacman -U --noconfirm ${INSTALL_PATH}
+    pacman -U --noconfirm --overwrite '*' ${INSTALL_PATH}
 " || {
     echo -e "${RED}Error: Failed to install calamares-config package${NC}" >&2
     echo -e "${YELLOW}Debugging: Checking if file exists in rootfs...${NC}"

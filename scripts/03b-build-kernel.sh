@@ -267,11 +267,25 @@ else
         RESTORE_CHECKSPACE=1
     fi
 
+    # Reinitialize the pacman keyring before installing packages.
+    # Running step 3b standalone (or after a partial build) may leave the chroot
+    # without a valid keyring, causing "keyring is not writable" on pacman -U.
+    echo -e "${BLUE}Reinitializing pacman keyring in chroot...${NC}"
+    sudo rm -rf "${SQUASHFS_ROOTFS}/etc/pacman.d/gnupg"
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --init
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --populate archlinux cachyos
+    echo -e "${GREEN}✓ Keyring initialized and populated${NC}"
+
     # Install via pacman in the chroot.
     # --noscriptlet: skip the .install hooks here; we run mkinitcpio explicitly
-    # below so it uses the live-boot mkinitcpio.conf (archiso/memdisk hooks).
+    #   below so it uses the live-boot mkinitcpio.conf (archiso/memdisk hooks).
+    # -dd (--nodeps twice): fully skip ALL dependency checks and installation.
+    #   linux-jarvisos-headers depends=(pahole) for end-user module building, but
+    #   pahole is not needed in the live squashfs. A single --nodeps still installs
+    #   missing deps; -dd suppresses that entirely. The installed system satisfies
+    #   deps via its own pacman + internet access.
     sudo arch-chroot "${SQUASHFS_ROOTFS}" \
-        pacman -U --noconfirm --noscriptlet \
+        pacman -U --noconfirm --noscriptlet -dd \
         "/root/$(basename "${PKG_LINUX}")" \
         "/root/$(basename "${PKG_HEADERS}")"
 

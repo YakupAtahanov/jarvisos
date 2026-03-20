@@ -69,7 +69,12 @@ sudo mount --bind "${SQUASHFS_ROOTFS}" "${SQUASHFS_ROOTFS}" || {
 }
 cleanup() {
     echo -e "${BLUE}Cleaning up mounts...${NC}"
-    sudo umount "${SQUASHFS_ROOTFS}" 2>/dev/null || true
+    # Unmount in reverse order: virtual FSes first, then the rootfs bind-mount.
+    # arch-chroot may have left proc/sys/dev/run mounted if it was interrupted.
+    for _mp in dev/pts dev/shm dev proc sys run tmp; do
+        sudo umount -l "${SQUASHFS_ROOTFS}/${_mp}" 2>/dev/null || true
+    done
+    sudo umount -l "${SQUASHFS_ROOTFS}" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -85,11 +90,14 @@ sudo grep -q '^DisableDownloadTimeout' "${SQUASHFS_ROOTFS}/etc/pacman.conf" || \
 echo -e "${GREEN}✓ pacman tuned${NC}"
 
 # ── Step 4: Keyrings ─────────────────────────────────────────────────────────
+# Wipe any stale keyring state, then reinitialise from scratch.
+# This guarantees a clean keyring regardless of what the CachyOS squashfs ships.
+echo -e "${BLUE}Reinitializing pacman keyring...${NC}"
+sudo rm -rf "${SQUASHFS_ROOTFS}/etc/pacman.d/gnupg"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --init
 echo -e "${BLUE}Populating keyrings (archlinux + cachyos)...${NC}"
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --populate archlinux cachyos 2>&1 || {
-    echo -e "${YELLOW}Warning: keyring populate had issues — continuing${NC}"
-}
-echo -e "${GREEN}✓ Keyrings populated${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --populate archlinux cachyos
+echo -e "${GREEN}✓ Keyring initialized and populated${NC}"
 
 # ── Step 5: Sync DB ───────────────────────────────────────────────────────────
 echo -e "${BLUE}Syncing package database...${NC}"
