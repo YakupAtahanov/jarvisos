@@ -1,7 +1,7 @@
 #!/bin/bash
 # Post-installation JARVIS configuration script
 # Called by Calamares shellprocess with dontChroot: true.
-# $1 = target root path (@@ROOT@@ substituted by Calamares)
+# $1 = target root path (${ROOT} substituted by Calamares before execution)
 #
 # Configures SDDM, creates XDG autostart, removes live-ISO cruft.
 # Voice settings are deferred to first-boot JARVIS welcome wizard.

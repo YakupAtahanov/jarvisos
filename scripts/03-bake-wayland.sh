@@ -410,6 +410,26 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     traceroute \
     openssh
 
+# ============================================================================
+# Disk installation tools — required by install-jarvisos.sh (CLI backup installer)
+# These must be present in the live rootfs so the TUI installer works without
+# any additional package downloads.
+# ============================================================================
+echo -e "${BLUE}Installing disk/install tools for the CLI backup installer...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
+    parted \
+    gptfdisk \
+    arch-install-scripts \
+    rsync \
+    btrfs-progs \
+    dosfstools \
+    e2fsprogs \
+    xfsprogs \
+    util-linux \
+    lsof \
+    smartmontools
+echo -e "${GREEN}✓ Disk/install tools installed (parted, sgdisk, genfstab, rsync, btrfs-progs, dosfstools)${NC}"
+
 # Python packages (use --needed to skip already-installed packages)
 echo -e "${BLUE}Installing Python packages...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \

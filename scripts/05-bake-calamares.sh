@@ -409,6 +409,12 @@ fi
 
 cd "${CALAMARES_CONFIG_DIR}"
 
+# Clean any stale packages from previous builds before rebuilding.
+# Without this, find | head -1 below can pick an old package that predates
+# files added later (e.g. install-jarvisos.sh was absent in early builds).
+echo -e "${BLUE}Cleaning stale calamares-config packages...${NC}"
+rm -f "${CALAMARES_CONFIG_DIR}"/*.pkg.tar.zst "${CALAMARES_CONFIG_DIR}"/*.pkg.tar.gz 2>/dev/null || true
+
 # Build the package
 # Use --nodeps to skip dependency checking (calamares is in chroot, not on host)
 echo -e "${BLUE}Running makepkg (skipping dependency checks)...${NC}"
@@ -418,8 +424,10 @@ makepkg -f --noconfirm --nodeps || {
     exit 1
 }
 
-# Find the built package (could be .tar.zst or .tar.gz depending on makepkg config)
-PKGFILE=$(find "${CALAMARES_CONFIG_DIR}" -maxdepth 1 \( -name 'calamares-config-*.pkg.tar.zst' -o -name 'calamares-config-*.pkg.tar.gz' \) -type f | head -1) || true
+# Find the built package — sort by mtime (newest first) so we always get the
+# package just produced by makepkg, never a stale leftover from a prior run.
+PKGFILE=$(ls -t "${CALAMARES_CONFIG_DIR}"/calamares-config-*.pkg.tar.zst \
+              "${CALAMARES_CONFIG_DIR}"/calamares-config-*.pkg.tar.gz 2>/dev/null | head -1) || true
 
 if [ -z "${PKGFILE}" ]; then
     echo -e "${RED}Error: Built package file not found${NC}" >&2

@@ -1,7 +1,7 @@
 # Maintainer: JARVIS OS Team
 pkgname=calamares-config
 pkgver=1.0.0
-pkgrel=9
+pkgrel=10
 pkgdesc="Calamares installer configuration for JARVIS OS"
 arch=('any')
 license=('MIT')
