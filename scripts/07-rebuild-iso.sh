@@ -898,18 +898,36 @@ SYSLINUX_CACHYOS_EOF
     fi
 fi
 
-# CRITICAL FIX: Update syslinux boot parameters to use archisolabel
-# The original Arch ISO uses archisosearchuuid with a timestamp UUID.
-# When we rebuild the ISO with xorriso, it gets a NEW UUID, so the old one
-# no longer matches. This prevents archiso from finding & mounting the boot
-# device at /run/archiso/bootmnt/, which breaks Calamares unpackfs.
-# Fix: replace archisosearchuuid=<old> with archisolabel=<our-label>.
+# CRITICAL FIX: Update ALL boot parameters to use archisolabel
+# The original CachyOS/Arch ISO uses archisosearchuuid with a timestamp UUID
+# (format: YYYY-MM-DD-HH-MM-SS-cc, e.g. 2026-03-08-13-36-02-00).
+# When we rebuild the ISO with xorriso, the volume UUID changes but the boot
+# configs still reference the OLD UUID, so the archiso initramfs hook
+# searches for /dev/disk/by-uuid/<old-uuid> and boot/<old-uuid>.uuid, finds
+# neither, and drops to an emergency shell.
+# Fix: replace archisosearchuuid=<old> with archisolabel=<our-label> in
+# EVERY bootloader config: syslinux, GRUB, and systemd-boot loader entries.
+
+# ── syslinux (BIOS) ───────────────────────────────────────────────────────────
 echo -e "${BLUE}Fixing syslinux boot parameters (archisosearchuuid → archisolabel)...${NC}"
 for cfg in boot/syslinux/archiso_sys-linux.cfg boot/syslinux/archiso_pxe-linux.cfg; do
     if [ -f "${cfg}" ]; then
-        # Replace archisosearchuuid=<anything> with archisolabel=JARVISOS_202601
+        # Replace archisosearchuuid=<anything> with archisolabel=JARVISOS_YYYYMM
         sed -i "s/archisosearchuuid=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
         # Also normalise any existing archisolabel to our volume ID
+        sed -i "s/archisolabel=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
+        echo -e "${GREEN}✓ Fixed $(basename "${cfg}")${NC}"
+    fi
+done
+
+# ── GRUB (BIOS + UEFI) ───────────────────────────────────────────────────────
+# CachyOS uses GRUB as the primary bootloader. Without this fix the kernel
+# cmdline still contains archisosearchuuid=<cachyos-uuid> and the archiso
+# initramfs hook falls to an emergency shell ("Device not found").
+echo -e "${BLUE}Fixing GRUB boot parameters (archisosearchuuid → archisolabel)...${NC}"
+for cfg in boot/grub/grub.cfg boot/grub/loopback.cfg; do
+    if [ -f "${cfg}" ]; then
+        sed -i "s/archisosearchuuid=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
         sed -i "s/archisolabel=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
         echo -e "${GREEN}✓ Fixed $(basename "${cfg}")${NC}"
     fi
@@ -1015,6 +1033,15 @@ if [ -d "loader/entries" ]; then
         fi
     done
 fi
+
+# Update GRUB configs (second pass to ensure nothing was missed)
+for cfg in boot/grub/grub.cfg boot/grub/loopback.cfg; do
+    if [ -f "${cfg}" ]; then
+        sed -i "s/archisosearchuuid=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
+        sed -i "s/archisolabel=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
+        echo -e "${GREEN}✓ Updated $(basename "${cfg}")${NC}"
+    fi
+done
 
 # Update efiboot.img loader entries
 EFI_IMG_PATH="EFI/archiso/efiboot.img"
