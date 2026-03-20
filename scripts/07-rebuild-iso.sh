@@ -231,6 +231,31 @@ else
     echo -e "${YELLOW}  Run 'make step3b' to build linux-jarvisos before step 7.${NC}"
 fi
 
+# ── Copy linux-cachyos kernel (live boot fallback entry) ──────────────────────
+# Places vmlinuz-linux-cachyos alongside the primary kernel so a separate
+# boot menu entry can offer it as a fallback.  Backed up by step 3 into:
+#   build/kernel-files/vmlinuz-linux-cachyos
+#   build/kernel-files/initramfs-linux-cachyos.img
+echo -e "${BLUE}Copying linux-cachyos kernel (live fallback entry)...${NC}"
+CACHYOS_FALLBACK_IN_ISO=false
+for _csrc in "${KERNEL_BACKUP_DIR}" "${ROOTFS_BOOT}"; do
+    _ctype="backup"
+    [ "${_csrc}" = "${ROOTFS_BOOT}" ] && _ctype="rootfs"
+    if copy_kernel_file_to_iso "vmlinuz-linux-cachyos" "${_csrc}" "${_ctype}" 2>/dev/null; then
+        CACHYOS_FALLBACK_IN_ISO=true
+        CACHYOS_KSIZE=$(du -h "${ISO_BOOT_DIR}/vmlinuz-linux-cachyos" | cut -f1)
+        echo -e "${GREEN}✓ vmlinuz-linux-cachyos (${CACHYOS_KSIZE}) — fallback${NC}"
+        if copy_kernel_file_to_iso "initramfs-linux-cachyos.img" "${_csrc}" "${_ctype}" 2>/dev/null; then
+            CACHYOS_ISIZE=$(du -h "${ISO_BOOT_DIR}/initramfs-linux-cachyos.img" | cut -f1)
+            echo -e "${GREEN}  ✓ initramfs-linux-cachyos.img (${CACHYOS_ISIZE})${NC}"
+        fi
+        copy_kernel_file_to_iso "initramfs-linux-cachyos-fallback.img" "${_csrc}" "${_ctype}" 2>/dev/null || true
+        break
+    fi
+done
+[ "${CACHYOS_FALLBACK_IN_ISO}" = false ] && \
+    echo -e "${YELLOW}⚠ linux-cachyos kernel not found — fallback boot entry will be skipped${NC}"
+
 # Verify kernel files are present (stock or jarvisos-overwritten)
 echo -e "${BLUE}Verifying boot kernel files...${NC}"
 if [ ! -f "${ISO_BOOT_DIR}/vmlinuz-linux" ] || [ ! -f "${ISO_BOOT_DIR}/initramfs-linux.img" ]; then
@@ -457,6 +482,17 @@ copy_kernel_files() {
     # No boot entry references it, and at ~240MB it would require a much larger image.
     # The fallback is available in arch/boot/x86_64/ on the ISO filesystem for recovery.
 
+    # Copy linux-cachyos fallback kernel into EFI image (if present in ISO boot dir)
+    if [ -f "${kernel_src}/vmlinuz-linux-cachyos" ]; then
+        if sudo cp "${kernel_src}/vmlinuz-linux-cachyos" "${kernel_dst}/"; then
+            echo -e "${GREEN}✓ Copied vmlinuz-linux-cachyos into EFI image (fallback)${NC}"
+        fi
+        if [ -f "${kernel_src}/initramfs-linux-cachyos.img" ]; then
+            sudo cp "${kernel_src}/initramfs-linux-cachyos.img" "${kernel_dst}/" 2>/dev/null && \
+                echo -e "${GREEN}  ✓ initramfs-linux-cachyos.img into EFI image${NC}" || true
+        fi
+    fi
+
     # Copy microcode updates (optional)
     for ucode in amd-ucode.img intel-ucode.img; do
         if [ -f "${kernel_src}/${ucode}" ]; then
@@ -634,7 +670,9 @@ create_efi_image() {
                "arch/boot/x86_64/vmlinuz-linux" \
                "arch/boot/x86_64/initramfs-linux.img" \
                "arch/boot/x86_64/amd-ucode.img" \
-               "arch/boot/x86_64/intel-ucode.img"; do
+               "arch/boot/x86_64/intel-ucode.img" \
+               "arch/boot/x86_64/vmlinuz-linux-cachyos" \
+               "arch/boot/x86_64/initramfs-linux-cachyos.img"; do
         [ -f "${_f}" ] && _content_bytes=$((_content_bytes + $(stat -c%s "${_f}")))
     done
     # Add 32MB for EFI shells, loader config, FAT metadata; then 30% overhead buffer
@@ -786,12 +824,27 @@ if [ -d "loader/entries" ]; then
             sed -i 's/Arch Linux/JarvisOS/g' "${entry}"
         fi
     done
-    echo -e "${GREEN}✓ Rebranded UEFI boot entries${NC}"
+    echo -e "${GREEN}✓ Rebranded UEFI boot entries (Arch Linux → JarvisOS)${NC}"
 fi
+
+# Rebrand CachyOS → JarvisOS in all boot configs
+echo -e "${BLUE}Rebranding CachyOS → JarvisOS in boot menus...${NC}"
+for _rebrand_cfg in "loader/entries/"*.conf \
+                    "boot/syslinux/"*.cfg \
+                    "boot/grub/loopback.cfg" \
+                    "boot/grub/grub.cfg"; do
+    [ -f "${_rebrand_cfg}" ] || continue
+    sed -i 's/CachyOS Linux install medium/JarvisOS/g' "${_rebrand_cfg}" 2>/dev/null || true
+    sed -i 's/CachyOS Linux live medium/JarvisOS/g'    "${_rebrand_cfg}" 2>/dev/null || true
+    sed -i 's/CachyOS Linux/JarvisOS/g'                "${_rebrand_cfg}" 2>/dev/null || true
+    sed -i 's/CachyOS/JarvisOS/g'                      "${_rebrand_cfg}" 2>/dev/null || true
+done
+echo -e "${GREEN}✓ Rebranded CachyOS references${NC}"
 
 # Rebrand syslinux BIOS boot menu
 if [ -f "boot/syslinux/archiso_head.cfg" ]; then
     sed -i 's/MENU TITLE Arch Linux/MENU TITLE JarvisOS/' "boot/syslinux/archiso_head.cfg"
+    sed -i 's/MENU TITLE CachyOS.*/MENU TITLE JarvisOS/'  "boot/syslinux/archiso_head.cfg"
     echo -e "${GREEN}✓ Rebranded syslinux menu title${NC}"
 fi
 for cfg in boot/syslinux/archiso_sys-linux.cfg boot/syslinux/archiso_pxe-linux.cfg; do
@@ -816,6 +869,34 @@ for cfg in boot/grub/grub.cfg boot/grub/grubenv; do
         sed -i 's/Arch Linux/JarvisOS/g' "${cfg}" 2>/dev/null || true
     fi
 done
+
+# ── Create linux-cachyos fallback boot entries ────────────────────────────────
+if [ "${CACHYOS_FALLBACK_IN_ISO}" = true ]; then
+    # systemd-boot entry (UEFI)
+    if [ -d "loader/entries" ]; then
+        cat > "loader/entries/02-jarvisos-cachyos.conf" << CACHYOS_ENTRY_EOF
+title    JarvisOS (linux-cachyos fallback)
+linux    /arch/boot/x86_64/vmlinuz-linux-cachyos
+initrd   /arch/boot/x86_64/initramfs-linux-cachyos.img
+options  archisobasedir=arch archisolabel=${JARVISOS_VOLID}
+CACHYOS_ENTRY_EOF
+        echo -e "${GREEN}✓ Created linux-cachyos fallback systemd-boot entry${NC}"
+    fi
+
+    # syslinux entry (BIOS)
+    SYSLINUX_CFG="boot/syslinux/archiso_sys-linux.cfg"
+    if [ -f "${SYSLINUX_CFG}" ]; then
+        cat >> "${SYSLINUX_CFG}" << SYSLINUX_CACHYOS_EOF
+
+LABEL cachyos-fallback
+  MENU LABEL JarvisOS (linux-cachyos fallback)
+  LINUX    /arch/boot/x86_64/vmlinuz-linux-cachyos
+  INITRD   /arch/boot/x86_64/initramfs-linux-cachyos.img
+  APPEND   archisobasedir=arch archisolabel=${JARVISOS_VOLID}
+SYSLINUX_CACHYOS_EOF
+        echo -e "${GREEN}✓ Created linux-cachyos fallback syslinux entry${NC}"
+    fi
+fi
 
 # CRITICAL FIX: Update syslinux boot parameters to use archisolabel
 # The original Arch ISO uses archisosearchuuid with a timestamp UUID.
@@ -882,11 +963,26 @@ if [ -f "${EFI_IMG_PATH}" ]; then
                     sudo sed -i "s/archisolabel=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${entry}"
                     # Fix options line to use archisolabel
                     sudo sed -i "s|^options .*|options archisobasedir=arch archisolabel=${JARVISOS_VOLID}|g" "${entry}"
+                    # Rebrand CachyOS inside efiboot.img
+                    sudo sed -i 's/CachyOS Linux install medium/JarvisOS/g' "${entry}" 2>/dev/null || true
+                    sudo sed -i 's/CachyOS Linux/JarvisOS/g'                "${entry}" 2>/dev/null || true
+                    sudo sed -i 's/CachyOS/JarvisOS/g'                      "${entry}" 2>/dev/null || true
                     echo -e "${GREEN}✓ Fixed $(basename "${entry}") in efiboot.img${NC}"
                 fi
             done
+
+            # Create linux-cachyos fallback entry inside efiboot.img
+            if [ "${CACHYOS_FALLBACK_IN_ISO}" = true ]; then
+                sudo tee "${EFI_MOUNT}/loader/entries/02-jarvisos-cachyos.conf" > /dev/null << CACHYOS_EFI_EOF
+title    JarvisOS (linux-cachyos fallback)
+linux    /EFI/archiso/boot/x86_64/vmlinuz-linux-cachyos
+initrd   /EFI/archiso/boot/x86_64/initramfs-linux-cachyos.img
+options  archisobasedir=arch archisolabel=${JARVISOS_VOLID}
+CACHYOS_EFI_EOF
+                echo -e "${GREEN}✓ Created linux-cachyos fallback entry in efiboot.img${NC}"
+            fi
         fi
-        
+
         sudo umount "${EFI_MOUNT}" || sudo umount -l "${EFI_MOUNT}"
     fi
     rmdir "${EFI_MOUNT}" 2>/dev/null || true
