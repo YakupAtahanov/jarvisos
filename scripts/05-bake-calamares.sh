@@ -88,11 +88,12 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${BLUE}Installing bootloader packages (grub + efibootmgr)...${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed grub efibootmgr || {
-    echo -e "${RED}Error: Failed to install grub and efibootmgr${NC}" >&2
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
+    grub efibootmgr os-prober dosfstools || {
+    echo -e "${RED}Error: Failed to install bootloader packages${NC}" >&2
     exit 1
 }
-echo -e "${GREEN}✓ grub and efibootmgr installed${NC}"
+echo -e "${GREEN}✓ grub, efibootmgr, os-prober, dosfstools installed${NC}"
 
 # Step 3b: Add chaotic-aur repository
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

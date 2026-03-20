@@ -1,7 +1,7 @@
 # Maintainer: JARVIS OS Team
 pkgname=calamares-config
 pkgver=1.0.0
-pkgrel=6
+pkgrel=8
 pkgdesc="Calamares installer configuration for JARVIS OS"
 arch=('any')
 license=('MIT')
@@ -25,6 +25,7 @@ package() {
     # Set proper permissions
     chmod +x "${pkgdir}/usr/local/bin/configure-jarvis.sh"
     chmod +x "${pkgdir}/usr/local/bin/mount-bootmnt.sh"
+    chmod +x "${pkgdir}/usr/local/bin/calamares-pull-model.sh"
     # Desktop files must be 644, not executable
     chmod 644 "${pkgdir}/root/Desktop/calamares.desktop"
 }
