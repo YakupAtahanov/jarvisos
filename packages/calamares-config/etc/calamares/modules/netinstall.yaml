@@ -10,6 +10,60 @@
 # etc.) is installed by unpacking the live squashfs onto the target disk.
 # Only packages that need to be *downloaded* at install time belong here.
 
+# ── JARVIS AI FEATURES ───────────────────────────────────────────────────────
+
+- name: "JARVIS Voice Input (STT)"
+  description: "Offline speech-to-text so you can control JARVIS with your voice. Installs the Vosk speech recognition engine and Python bindings."
+  hidden: false
+  selected: true
+  critical: false
+  packages:
+    - python-pyaudio
+    - portaudio
+
+- name: "JARVIS Voice Output (TTS)"
+  description: "Text-to-speech engine so JARVIS can speak responses aloud. Installs the espeak-ng synthesiser and PiperTTS runtime dependencies."
+  hidden: false
+  selected: true
+  critical: false
+  packages:
+    - espeak-ng
+    - python-pyaudio
+    - portaudio
+
+- name: "JARVIS Python AI Libraries"
+  description: "Extended Python scientific and machine-learning libraries used by JARVIS plugins: numpy, scipy, scikit-learn, pillow, and transformers."
+  hidden: false
+  selected: false
+  critical: false
+  packages:
+    - python-numpy
+    - python-scipy
+    - python-pillow
+    - python-requests
+    - python-pydantic
+
+- name: "Ollama GPU Acceleration (NVIDIA)"
+  description: "NVIDIA CUDA drivers and cuBLAS so Ollama runs AI models on your GPU instead of the CPU. Requires an NVIDIA GPU."
+  hidden: false
+  selected: false
+  critical: false
+  packages:
+    - cuda
+    - cudnn
+    - nvidia-utils
+    - lib32-nvidia-utils
+
+- name: "Ollama GPU Acceleration (AMD ROCm)"
+  description: "AMD ROCm OpenCL runtime so Ollama can use AMD GPUs for AI inference acceleration."
+  hidden: false
+  selected: false
+  critical: false
+  packages:
+    - rocm-opencl-runtime
+    - rocm-hip-runtime
+    - hip-runtime-amd
+
 # ── OPTIONAL KERNELS ─────────────────────────────────────────────────────────
 
 - name: "Base Linux Kernel"

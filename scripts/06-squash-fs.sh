@@ -159,9 +159,8 @@ sudo find "${SQUASHFS_ROOTFS}/usr/share/wallpapers" -mindepth 1 -maxdepth 1 \
     ! -name 'JarvisOS*' ! -name 'Next' \
     -exec rm -rf {} + 2>/dev/null || true
 
-echo -e "${BLUE}Removing GObject introspection data (typelib runtime data)...${NC}"
-sudo rm -rf "${SQUASHFS_ROOTFS}/usr/lib/girepository-1.0" 2>/dev/null || true
-sudo rm -rf "${SQUASHFS_ROOTFS}/usr/share/gir-1.0" 2>/dev/null || true
+# NOTE: /usr/lib/girepository-1.0 (GI typelibs) are RUNTIME data — nm-applet and
+# other GI-dependent tools load them at startup. Do NOT strip these.
 
 echo -e "${BLUE}Size after stripping:${NC}"
 sudo du -sh "${SQUASHFS_ROOTFS}" 2>/dev/null | cut -f1

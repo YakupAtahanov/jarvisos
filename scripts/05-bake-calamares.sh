@@ -478,6 +478,53 @@ fi
 
 echo -e "${GREEN}✓ calamares-config package installed${NC}"
 
+# Step 6b: Create jarvis-setup.service (first-boot Ollama model pull / JARVIS init)
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}Creating jarvis-setup.service (first-boot JARVIS initialisation)...${NC}"
+sudo bash -c "cat > '${SQUASHFS_ROOTFS}/usr/lib/systemd/system/jarvis-setup.service'" <<'SVCEOF'
+[Unit]
+Description=JARVIS OS First-Boot Setup (Ollama model pull)
+After=network-online.target ollama.service
+Wants=network-online.target ollama.service
+ConditionPathExists=!/var/lib/jarvis/.setup-complete
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/var/lib/jarvis
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/local/bin/calamares-pull-model.sh
+ExecStartPost=/bin/touch /var/lib/jarvis/.setup-complete
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+echo -e "${GREEN}✓ jarvis-setup.service created${NC}"
+
+# Step 6c: Add backup installer shortcut to liveuser Desktop
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}Adding backup installer shortcut to liveuser Desktop...${NC}"
+sudo bash -c "cat > '${SQUASHFS_ROOTFS}/home/liveuser/Desktop/install-jarvisos-cli.desktop'" <<'DESKEOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Install JARVIS OS (CLI)
+GenericName=Backup Installer
+Comment=Text-based installer — use if Calamares fails
+Exec=konsole -e sudo /usr/local/bin/install-jarvisos.sh
+Icon=system-software-install
+Terminal=false
+StartupNotify=true
+Categories=System;
+Keywords=install;installer;jarvis;
+DESKEOF
+sudo chmod 644 "${SQUASHFS_ROOTFS}/home/liveuser/Desktop/install-jarvisos-cli.desktop"
+sudo chown root:root "${SQUASHFS_ROOTFS}/home/liveuser/Desktop/install-jarvisos-cli.desktop" 2>/dev/null || true
+echo -e "${GREEN}✓ Backup installer shortcut added to liveuser Desktop${NC}"
+
 # Step 7: Update KDE application database
 echo -e "${BLUE}Updating KDE application database...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c '
@@ -508,4 +555,8 @@ echo -e "${BLUE}  ✓ Main config: /etc/calamares/settings.conf${NC}"
 echo -e "${BLUE}  ✓ Modules: /etc/calamares/modules/${NC}"
 echo -e "${BLUE}  ✓ Branding: /etc/calamares/branding/jarvisos/${NC}"
 echo -e "${BLUE}  ✓ Desktop launcher: ~/Desktop/calamares.desktop${NC}"
+echo -e "${BLUE}  ✓ Backup installer: /usr/local/bin/install-jarvisos.sh${NC}"
+echo -e "${BLUE}  ✓ Backup launcher:  ~/Desktop/install-jarvisos-cli.desktop${NC}"
+echo -e "${BLUE}  ✓ First-boot setup: jarvis-setup.service${NC}"
+echo -e "${BLUE}  ✓ Welcome script:   /usr/local/bin/jarvis-welcome.sh${NC}"
 

@@ -117,5 +117,34 @@ else
     echo "  Warning: Could not determine installed user — welcome autostart skipped"
 fi
 
+# ---------------------------------------------------------------------------
+# Remove liveuser from installed system
+# ---------------------------------------------------------------------------
+echo "Removing live ISO user from installed system..."
+# userdel -r would remove the home dir — do it safely
+if grep -q "^liveuser:" "${ROOT}/etc/passwd" 2>/dev/null; then
+    chroot "${ROOT}" userdel -r liveuser 2>/dev/null || true
+    echo "  liveuser removed"
+fi
+rm -f "${ROOT}/etc/polkit-1/rules.d/50-liveuser.rules" 2>/dev/null || true
+rm -f "${ROOT}/etc/sudoers.d/liveuser" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Ensure resolv.conf is a runtime symlink (not a static file from the live env)
+# ---------------------------------------------------------------------------
+rm -f "${ROOT}/etc/resolv.conf" 2>/dev/null || true
+ln -sf /run/systemd/resolve/stub-resolv.conf "${ROOT}/etc/resolv.conf"
+
+# ---------------------------------------------------------------------------
+# Enable jarvis-setup.service if present (first-boot model pull fallback)
+# ---------------------------------------------------------------------------
+if [ -f "${ROOT}/usr/lib/systemd/system/jarvis-setup.service" ]; then
+    WANTS_DIR="${ROOT}/etc/systemd/system/multi-user.target.wants"
+    mkdir -p "${WANTS_DIR}"
+    ln -sf /usr/lib/systemd/system/jarvis-setup.service \
+           "${WANTS_DIR}/jarvis-setup.service" 2>/dev/null || true
+    echo "  jarvis-setup.service enabled"
+fi
+
 echo "JARVIS configuration complete."
 exit 0

@@ -407,7 +407,8 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     ethtool \
     iproute2 \
     bind-tools \
-    traceroute
+    traceroute \
+    openssh
 
 # Python packages (use --needed to skip already-installed packages)
 echo -e "${BLUE}Installing Python packages...${NC}"
@@ -997,6 +998,14 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable ModemManager.service
 # RealtimeKit: CRITICAL for PipeWire audio real-time scheduling.
 # Without rtkit, PipeWire cannot acquire RT priority → audio dropouts or failure.
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable rtkit-daemon.service
+sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable sshd.service
+
+# Pre-generate SSH host keys so sshd.service doesn't fail on live boot.
+# Without these, sshd errors "Missing privilege separation directory" or
+# "No host keys available" and the service fails immediately.
+echo -e "${BLUE}Generating SSH host keys for live boot...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" ssh-keygen -A
+echo -e "${GREEN}✓ SSH host keys generated${NC}"
 
 echo -e "${GREEN}✓ Services enabled${NC}"
 
@@ -1126,6 +1135,7 @@ Session=plasma
 
 [General]
 DisplayServer=wayland
+CompositorCommand=kwin_wayland --drm --no-lockscreen --no-global-shortcuts --locale1
 Numlock=on
 
 [Wayland]
