@@ -25,6 +25,10 @@ BUILD_DIR="${PROJECT_ROOT}${BUILD_DIR}"
 SQUASHFS_ROOTFS="${BUILD_DIR}/iso-rootfs"
 BUILD_DEPS_DIR="${PROJECT_ROOT}${BUILD_DEPS_DIR}"
 KERNEL_BACKUP_DIR="${BUILD_DIR}/kernel-files"
+# In CachyOS (archiso), kernel files live on the ISO filesystem, not in the squashfs.
+# Step 01 extracts the ISO to iso-extract/; the kernel is at arch/boot/x86_64/.
+ISO_EXTRACT_DIR="${BUILD_DIR}${ISO_EXTRACT_DIR}"
+ISO_BOOT_DIR="${ISO_EXTRACT_DIR}/arch/boot/x86_64"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -265,16 +269,49 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${BLUE}Backing up linux-cachyos kernel files for ISO rebuild (step 7)...${NC}"
 mkdir -p "${KERNEL_BACKUP_DIR}"
 
-VMLINUZ_CACHYOS=$(sudo find "${SQUASHFS_ROOTFS}/boot" \
-    -name "vmlinuz-linux-cachyos" 2>/dev/null | head -1)
-INITRAMFS_CACHYOS=$(sudo find "${SQUASHFS_ROOTFS}/boot" \
-    -name "initramfs-linux-cachyos.img" 2>/dev/null | head -1)
-INITRAMFS_CACHYOS_FALLBACK=$(sudo find "${SQUASHFS_ROOTFS}/boot" \
-    -name "initramfs-linux-cachyos-fallback.img" 2>/dev/null | head -1)
+# CachyOS (archiso) stores kernel files on the ISO filesystem (arch/boot/x86_64/),
+# NOT inside the squashfs rootfs /boot/.  Moreover, archiso always names the boot
+# files with the generic names (vmlinuz-linux, initramfs-linux.img) regardless of
+# the actual kernel package (linux-cachyos).  Accept both the exact name and the
+# generic name (with -cachyos stripped).
+find_kernel_file() {
+    local name="$1"
+    # 1. ISO boot dir — exact name (e.g. vmlinuz-linux-cachyos)
+    if [ -f "${ISO_BOOT_DIR}/${name}" ]; then
+        echo "${ISO_BOOT_DIR}/${name}"
+        return 0
+    fi
+    # 2. ISO boot dir — generic archiso name (vmlinuz-linux, initramfs-linux.img)
+    #    Strip the -cachyos infix: vmlinuz-linux-cachyos → vmlinuz-linux
+    #                              initramfs-linux-cachyos.img → initramfs-linux.img
+    local generic="${name//-cachyos/}"
+    if [ "${generic}" != "${name}" ] && [ -f "${ISO_BOOT_DIR}/${generic}" ]; then
+        echo "${ISO_BOOT_DIR}/${generic}"
+        return 0
+    fi
+    # 3. squashfs rootfs /boot/ (fallback for non-standard builds)
+    local found
+    found=$(sudo find "${SQUASHFS_ROOTFS}/boot" -name "${name}" 2>/dev/null | head -1)
+    if [ -n "${found}" ]; then
+        echo "${found}"
+    fi
+    # Always return 0 — empty output signals "not found"; let caller decide severity.
+    # Never return 1: with set -e, a non-zero exit from $(find_kernel_file ...) would
+    # kill the script silently before our error handler runs.
+    return 0
+}
+
+VMLINUZ_CACHYOS=$(find_kernel_file "vmlinuz-linux-cachyos")
+INITRAMFS_CACHYOS=$(find_kernel_file "initramfs-linux-cachyos.img")
+INITRAMFS_CACHYOS_FALLBACK=$(find_kernel_file "initramfs-linux-cachyos-fallback.img")
 
 if [ -z "${VMLINUZ_CACHYOS}" ]; then
-    echo -e "${RED}FATAL: vmlinuz-linux-cachyos not found in rootfs/boot/${NC}" >&2
-    sudo ls -la "${SQUASHFS_ROOTFS}/boot/" || true
+    echo -e "${RED}FATAL: vmlinuz-linux-cachyos not found${NC}" >&2
+    echo -e "${YELLOW}  Searched:${NC}"
+    echo -e "${YELLOW}    ${ISO_BOOT_DIR}/${NC}"
+    echo -e "${YELLOW}    ${SQUASHFS_ROOTFS}/boot/${NC}"
+    ls -la "${ISO_BOOT_DIR}/" 2>/dev/null || echo "  (ISO boot dir missing — did step 1 run?)"
+    sudo ls -la "${SQUASHFS_ROOTFS}/boot/" 2>/dev/null || true
     exit 1
 fi
 
