@@ -5,9 +5,13 @@
 [submodule "linux"]
 	path = linux
 	url = git@github.com:majdaltouzach/linux.git
+	branch = jarvisos-6.19-stable
 [submodule "dmcp"]
 	path = dmcp
 	url = git@github.com:YakupAtahanov/dmcp.git
 [submodule "dispatch"]
 	path = dispatch
 	url = git@github.com:YakupAtahanov/dispatch.git
+[submodule "cachyos-calamares"]
+	path = cachyos-calamares
+	url = git@github.com:CachyOS/cachyos-calamares.git

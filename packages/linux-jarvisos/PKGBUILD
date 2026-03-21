@@ -13,8 +13,8 @@
 
 pkgbase=linux-jarvisos
 pkgname=(linux-jarvisos linux-jarvisos-headers)
-pkgver=6.19.6
-pkgrel=2
+pkgver=6.19.8
+pkgrel=1
 pkgdesc='Linux kernel with JARVIS AI integration drivers'
 arch=(x86_64)
 url='https://github.com/majdaltouzach/linux'
@@ -54,31 +54,14 @@ prepare() {
     # drop symbols that no longer exist in this source tree)
     make olddefconfig LOCALVERSION="$_localversion"
 
-    echo "  -> Applying JARVIS kernel config options..."
+    echo "  -> Applying base kernel config options..."
 
-    # Core kernel features required by JARVIS driver
-    scripts/config --enable  CONFIG_MISC_DEVICES
-    scripts/config --enable  CONFIG_SYSFS
-    scripts/config --enable  CONFIG_KEYS
-    scripts/config --enable  CONFIG_THERMAL
-    scripts/config --enable  CONFIG_THERMAL_HWMON
-
-    # JARVIS driver and sub-modules
-    scripts/config --module  CONFIG_JARVIS
-    scripts/config --enable  CONFIG_JARVIS_SYSMON
-    scripts/config --enable  CONFIG_JARVIS_POLICY
-    scripts/config --enable  CONFIG_JARVIS_KEYS
-    scripts/config --enable  CONFIG_JARVIS_SYSFS_METRICS
-
-    # DIBS zero-copy integration (optional — present only if driver is in tree)
-    if grep -q "config DIBS" "$_ksrc/drivers/dibs/Kconfig" 2>/dev/null; then
-        scripts/config --module CONFIG_DIBS
-        scripts/config --enable CONFIG_JARVIS_DIBS
-        echo "  -> DIBS zero-copy integration enabled"
-    else
-        scripts/config --disable CONFIG_JARVIS_DIBS
-        echo "  -> DIBS not found — CONFIG_JARVIS_DIBS disabled"
-    fi
+    # EFI stub — REQUIRED for systemd-boot EFISTUB to load this kernel on UEFI.
+    # Without CONFIG_EFI_STUB=y the vmlinuz is not a valid PE/COFF image and
+    # the firmware returns EFI_UNSUPPORTED → "Error loading EFI binary: Unsupported"
+    scripts/config --enable CONFIG_EFI
+    scripts/config --enable CONFIG_EFI_STUB
+    scripts/config --enable CONFIG_EFI_HANDOVER_PROTOCOL
 
     # Security and audit (needed by ELEVATED/DANGEROUS policy tiers)
     scripts/config --enable CONFIG_SECURITY
@@ -132,7 +115,7 @@ prepare() {
 
     # Device mapper (LVM, LUKS encryption)
     scripts/config --enable CONFIG_BLK_DEV_DM
-    scripts/config --enable CONFIG_DM_CRYPT
+    scripts/config --module CONFIG_DM_CRYPT
 
     # Graphics (KMS for early boot display)
     scripts/config --enable CONFIG_DRM
@@ -183,8 +166,54 @@ prepare() {
     scripts/config --module CONFIG_BT
     scripts/config --module CONFIG_BT_HCIBTUSB
 
-    # Resolve any new symbols introduced by the options above
+    # Apply JARVIS OS config fragment (ensures consistent settings regardless of host config)
+    if [[ -f "$_ksrc/arch/x86/configs/jarvisos.config" ]]; then
+        echo "  -> Merging JARVIS OS config fragment..."
+        "$_ksrc/scripts/kconfig/merge_config.sh" -m -O "$_ksrc" "$_ksrc/.config" \
+            "$_ksrc/arch/x86/configs/jarvisos.config"
+    fi
+
+    # Resolve any new symbols introduced by the merge
     make olddefconfig LOCALVERSION="$_localversion"
+
+    # ── Force JARVIS driver options last ──────────────────────────────────────
+    # Done AFTER merge + olddefconfig so nothing can silently drop them.
+    # CONFIG_MISC_DEVICES is the direct dependency of CONFIG_JARVIS — it must be
+    # enabled first or olddefconfig will discard CONFIG_JARVIS.
+    echo "  -> Enforcing JARVIS driver config..."
+    scripts/config --enable CONFIG_MISC_DEVICES
+    scripts/config --enable CONFIG_SYSFS
+    scripts/config --enable CONFIG_KEYS
+    scripts/config --enable CONFIG_THERMAL
+    scripts/config --enable CONFIG_THERMAL_HWMON
+    scripts/config --module CONFIG_JARVIS
+    scripts/config --enable CONFIG_JARVIS_SYSMON
+    scripts/config --enable CONFIG_JARVIS_POLICY
+    scripts/config --enable CONFIG_JARVIS_KEYS
+    scripts/config --enable CONFIG_JARVIS_SYSFS_METRICS
+
+    # DIBS zero-copy integration
+    if grep -q "config DIBS" "$_ksrc/drivers/dibs/Kconfig" 2>/dev/null; then
+        scripts/config --module CONFIG_DIBS
+        scripts/config --enable CONFIG_JARVIS_DIBS
+        echo "  -> DIBS zero-copy integration enabled"
+    else
+        scripts/config --disable CONFIG_JARVIS_DIBS
+        echo "  -> DIBS not found — CONFIG_JARVIS_DIBS disabled"
+    fi
+
+    # Final reconcile — olddefconfig will keep the symbols we just set because
+    # their dependencies (MISC_DEVICES, SYSFS, KEYS) are now satisfied.
+    make olddefconfig LOCALVERSION="$_localversion"
+
+    # ── Hard verification — fail the build if JARVIS didn't land ──────────────
+    if ! grep -q "^CONFIG_JARVIS=m" "$_ksrc/.config"; then
+        echo "  ERROR: CONFIG_JARVIS=m is missing from the final .config!" >&2
+        echo "  Dependency chain:" >&2
+        grep "CONFIG_MISC_DEVICES\|CONFIG_SYSFS\|CONFIG_JARVIS" "$_ksrc/.config" >&2
+        return 1
+    fi
+    echo "  -> CONFIG_JARVIS=m confirmed in final .config"
 }
 
 build() {

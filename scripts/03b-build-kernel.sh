@@ -1,18 +1,24 @@
 #!/bin/bash
-# Step 3b: Build linux-jarvisos custom kernel packages
+# Step 3b: Build linux-jarvisos custom kernel packages (6.19.8)
 #
-# Builds the JARVIS-integrated Linux kernel (6.19.6) from the linux/
-# submodule using the PKGBUILD at packages/linux-jarvisos/PKGBUILD, producing
-# two pacman packages:
+# Builds the JARVIS-integrated Linux kernel from the linux/ submodule using
+# the PKGBUILD at packages/linux-jarvisos/PKGBUILD, producing two packages:
 #
 #   linux-jarvisos         — kernel image + modules
 #   linux-jarvisos-headers — build headers for out-of-tree modules
 #
-# Both packages are installed into the rootfs alongside the stock Arch linux
-# kernel.  The stock kernel (from step 3) handles live boot hardware compat;
-# linux-jarvisos is what Calamares installs on the target system.
+# Default mode: installs packages into the ISO rootfs (for the ISO pipeline).
+# Host install mode: installs packages onto your running Arch system so you
+#   can boot linux-jarvisos directly from your bootloader.
 #
-# Prerequisites: step 2 (rootfs extracted) + step 3 (packages + mkinitcpio.conf)
+# Usage:
+#   bash scripts/03b-build-kernel.sh              # ISO pipeline (default)
+#   bash scripts/03b-build-kernel.sh --host-install  # build + install on host
+#   SKIP_KERNEL_BUILD=1 bash scripts/03b-build-kernel.sh --host-install
+#     # reuse already-built packages, just install on host
+#
+# Prerequisites (ISO mode): step 2 (rootfs extracted) + step 3 (packages + mkinitcpio.conf)
+# Prerequisites (host mode): running Arch-based system with pacman
 #
 # Host build tools required:
 #   Arch:          sudo pacman -S base-devel bc flex bison openssl libelf pahole
@@ -20,6 +26,15 @@
 #                      libssl-dev libelf-dev dwarves
 
 set -eo pipefail
+
+# ── Parse arguments ────────────────────────────────────────────────────────────
+HOST_INSTALL=0
+for arg in "$@"; do
+    case "$arg" in
+        --host-install) HOST_INSTALL=1 ;;
+        *) echo "Unknown argument: $arg" >&2; exit 1 ;;
+    esac
+done
 
 # Source config file and shared utilities
 source build.config
@@ -79,16 +94,18 @@ if [ ! -f "${PKGBUILD_DIR}/PKGBUILD" ]; then
     exit 1
 fi
 
-# Step 3 (rootfs) must be done first
-if [ ! -d "${SQUASHFS_ROOTFS}" ] || [ -z "$(ls -A "${SQUASHFS_ROOTFS}" 2>/dev/null)" ]; then
-    echo -e "${RED}FATAL: Rootfs not found. Run step 3 first.${NC}" >&2
-    exit 1
-fi
+# Step 3 (rootfs) must be done first — unless we're only installing on the host
+if [ "${HOST_INSTALL}" -eq 0 ]; then
+    if [ ! -d "${SQUASHFS_ROOTFS}" ] || [ -z "$(ls -A "${SQUASHFS_ROOTFS}" 2>/dev/null)" ]; then
+        echo -e "${RED}FATAL: Rootfs not found. Run step 3 first.${NC}" >&2
+        echo -e "${YELLOW}(To build and install on your host system instead, use --host-install)${NC}"
+        exit 1
+    fi
 
-# mkinitcpio must be installed in rootfs (placed there by step 3)
-if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" which mkinitcpio &>/dev/null; then
-    echo -e "${RED}FATAL: mkinitcpio not found in rootfs. Run step 3 first.${NC}" >&2
-    exit 1
+    if ! sudo arch-chroot "${SQUASHFS_ROOTFS}" which mkinitcpio &>/dev/null; then
+        echo -e "${RED}FATAL: mkinitcpio not found in rootfs. Run step 3 first.${NC}" >&2
+        exit 1
+    fi
 fi
 
 # makepkg must be installed on the host
@@ -139,22 +156,31 @@ if command -v ccache &>/dev/null; then
     echo -e "${GREEN}✓ ccache enabled for faster incremental builds${NC}"
 fi
 
-# ── Ensure comprehensive kernel config ────────────────────────────────────────
-# If a previous build left a minimal .config (from x86_64_defconfig), remove it
-# so the PKGBUILD's prepare() will use /proc/config.gz instead.
-# x86_64_defconfig produces a kernel missing most hardware drivers, making the
-# ISO unbootable on real hardware.
+# ── Ensure clean kernel config ────────────────────────────────────────────────
+# Always remove the stale .config from any previous build.
+#
+# Why: the previous build produced a .config that does not contain CONFIG_JARVIS
+# or its dependency CONFIG_MISC_DEVICES (they were absent from /proc/config.gz
+# on that build host too).  If we keep it, PKGBUILD's prepare() treats it as
+# the base, `make olddefconfig` silently drops CONFIG_JARVIS because the
+# dependency still isn't satisfied, and jarvis.ko is never compiled.
+#
+# Starting clean forces PKGBUILD to pull /proc/config.gz (the running
+# linux-jarvisos config) as the base, onto which jarvisos.config is then
+# merged — guaranteeing CONFIG_MISC_DEVICES and CONFIG_JARVIS are present
+# before compilation begins.
 cd "${KERNEL_SRC}"
 
 if [ -f .config ]; then
-    CONFIG_COUNT=$(grep -c '^CONFIG_' .config 2>/dev/null || echo 0)
-    if [ "${CONFIG_COUNT}" -lt 5000 ]; then
-        echo -e "${YELLOW}Existing .config appears minimal (${CONFIG_COUNT} options)${NC}"
-        echo -e "${YELLOW}Removing it — PKGBUILD will use host kernel config for full hardware support${NC}"
+    if ! grep -q "^CONFIG_JARVIS=" .config 2>/dev/null; then
+        echo -e "${YELLOW}Stale .config detected — CONFIG_JARVIS is absent.${NC}"
+        echo -e "${YELLOW}Removing it so PKGBUILD rebuilds from /proc/config.gz.${NC}"
         rm -f .config
     else
-        echo -e "${GREEN}✓ Existing .config looks comprehensive (${CONFIG_COUNT} options)${NC}"
+        echo -e "${GREEN}✓ .config already contains CONFIG_JARVIS — keeping it.${NC}"
     fi
+else
+    echo -e "${BLUE}No existing .config — PKGBUILD will use /proc/config.gz.${NC}"
 fi
 
 # ── Kernel version info ───────────────────────────────────────────────────────
@@ -172,8 +198,8 @@ export MAKEFLAGS="-j${NCPU}"
 # Allow skipping the kernel compilation when packages are already built.
 # Set SKIP_KERNEL_BUILD=1 to reuse existing packages in ${PKG_DEST} and jump
 # straight to the install + initramfs steps.
-EXISTING_PKG_LINUX=$(ls "${PKG_DEST}"/linux-jarvisos-[0-9]*.pkg.tar.zst 2>/dev/null | head -1)
-EXISTING_PKG_HEADERS=$(ls "${PKG_DEST}"/linux-jarvisos-headers-*.pkg.tar.zst 2>/dev/null | head -1)
+EXISTING_PKG_LINUX=$(ls -t "${PKG_DEST}"/linux-jarvisos-[0-9]*.pkg.tar.zst 2>/dev/null | head -1)
+EXISTING_PKG_HEADERS=$(ls -t "${PKG_DEST}"/linux-jarvisos-headers-*.pkg.tar.zst 2>/dev/null | head -1)
 
 if [[ "${SKIP_KERNEL_BUILD:-0}" == "1" ]] \
    && [[ -n "${EXISTING_PKG_LINUX}" ]] \
@@ -198,8 +224,8 @@ else
 fi
 
 # Locate the produced packages
-PKG_LINUX=$(ls "${PKG_DEST}"/linux-jarvisos-[0-9]*.pkg.tar.zst 2>/dev/null | head -1)
-PKG_HEADERS=$(ls "${PKG_DEST}"/linux-jarvisos-headers-*.pkg.tar.zst 2>/dev/null | head -1)
+PKG_LINUX=$(ls -t "${PKG_DEST}"/linux-jarvisos-[0-9]*.pkg.tar.zst 2>/dev/null | head -1)
+PKG_HEADERS=$(ls -t "${PKG_DEST}"/linux-jarvisos-headers-*.pkg.tar.zst 2>/dev/null | head -1)
 
 if [[ -z "${PKG_LINUX}" || -z "${PKG_HEADERS}" ]]; then
     echo -e "${RED}FATAL: Expected package files not found in ${PKG_DEST}${NC}" >&2
@@ -210,86 +236,114 @@ fi
 echo -e "${BLUE}  linux-jarvisos         : $(basename "${PKG_LINUX}")${NC}"
 echo -e "${BLUE}  linux-jarvisos-headers : $(basename "${PKG_HEADERS}")${NC}"
 
-# ── Install packages into rootfs ──────────────────────────────────────────────
+# ── Install packages ──────────────────────────────────────────────────────────
 echo ""
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Installing packages into rootfs...${NC}"
 
-# Stage packages in rootfs /root (NOT /tmp — arch-chroot mounts a tmpfs on /tmp
-# which hides any files copied there from the host side).
-sudo cp "${PKG_LINUX}" "${PKG_HEADERS}" "${SQUASHFS_ROOTFS}/root/"
+if [ "${HOST_INSTALL}" -eq 1 ]; then
+    # ── Host install mode: install onto the running system ────────────────────
+    echo -e "${BLUE}Installing linux-jarvisos onto host system...${NC}"
+    sudo pacman -U --noconfirm "${PKG_LINUX}" "${PKG_HEADERS}"
+    # pacman runs post_install: depmod + mkinitcpio automatically
 
-# Temporarily disable CheckSpace — pacman can't determine the root mount point
-# inside a chroot that isn't a real mountpoint, causing a spurious "not enough
-# free disk space" error.
-if grep -q '^CheckSpace' "${SQUASHFS_ROOTFS}/etc/pacman.conf"; then
-    sudo sed -i 's/^CheckSpace/#CheckSpace/' "${SQUASHFS_ROOTFS}/etc/pacman.conf"
-    RESTORE_CHECKSPACE=1
-fi
+    echo -e "${GREEN}✓ linux-jarvisos installed on host${NC}"
+    echo -e "${GREEN}✓ linux-jarvisos-headers installed on host${NC}"
 
-# Install via pacman in the chroot.
-# --noscriptlet: skip the .install hooks here; we run mkinitcpio explicitly
-# below so it uses the live-boot mkinitcpio.conf (archiso/memdisk hooks).
-sudo arch-chroot "${SQUASHFS_ROOTFS}" \
-    pacman -U --noconfirm --noscriptlet \
-    "/root/$(basename "${PKG_LINUX}")" \
-    "/root/$(basename "${PKG_HEADERS}")"
+    KERNEL_SIZE=$(du -h /boot/vmlinuz-linux-jarvisos 2>/dev/null | cut -f1 || echo "?")
+    INITRAMFS_SIZE=$(du -h /boot/initramfs-linux-jarvisos.img 2>/dev/null | cut -f1 || echo "?")
+else
+    # ── ISO pipeline mode: install into rootfs ────────────────────────────────
+    echo -e "${BLUE}Installing packages into rootfs...${NC}"
 
-# Restore CheckSpace
-if [ "${RESTORE_CHECKSPACE:-0}" = "1" ]; then
-    sudo sed -i 's/^#CheckSpace/CheckSpace/' "${SQUASHFS_ROOTFS}/etc/pacman.conf"
-fi
+    # Stage packages in rootfs /root (NOT /tmp — arch-chroot mounts a tmpfs on /tmp
+    # which hides any files copied there from the host side).
+    sudo cp "${PKG_LINUX}" "${PKG_HEADERS}" "${SQUASHFS_ROOTFS}/root/"
 
-# Clean up staged packages from rootfs
-sudo rm -f "${SQUASHFS_ROOTFS}/root/linux-jarvisos"*.pkg.tar.zst
+    # Temporarily disable CheckSpace — pacman can't determine the root mount point
+    # inside a chroot that isn't a real mountpoint, causing a spurious "not enough
+    # free disk space" error.
+    if grep -q '^CheckSpace' "${SQUASHFS_ROOTFS}/etc/pacman.conf"; then
+        sudo sed -i 's/^CheckSpace/#CheckSpace/' "${SQUASHFS_ROOTFS}/etc/pacman.conf"
+        RESTORE_CHECKSPACE=1
+    fi
 
-echo -e "${GREEN}✓ linux-jarvisos installed into rootfs via pacman${NC}"
-echo -e "${GREEN}✓ linux-jarvisos-headers installed into rootfs via pacman${NC}"
+    # Reinitialize the pacman keyring before installing packages.
+    # Running step 3b standalone (or after a partial build) may leave the chroot
+    # without a valid keyring, causing "keyring is not writable" on pacman -U.
+    echo -e "${BLUE}Reinitializing pacman keyring in chroot...${NC}"
+    sudo rm -rf "${SQUASHFS_ROOTFS}/etc/pacman.d/gnupg"
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --init
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --populate archlinux cachyos
+    echo -e "${GREEN}✓ Keyring initialized and populated${NC}"
 
-# ── Generate initramfs ────────────────────────────────────────────────────────
-echo ""
-echo -e "${BLUE}Generating initramfs for linux-jarvisos...${NC}"
-echo -e "${BLUE}(Uses live-boot mkinitcpio.conf — includes archiso/memdisk hooks)${NC}"
+    # Install via pacman in the chroot.
+    # --noscriptlet: skip the .install hooks here; we run mkinitcpio explicitly
+    #   below so it uses the live-boot mkinitcpio.conf (archiso/memdisk hooks).
+    # -dd (--nodeps twice): fully skip ALL dependency checks and installation.
+    #   linux-jarvisos-headers depends=(pahole) for end-user module building, but
+    #   pahole is not needed in the live squashfs. A single --nodeps still installs
+    #   missing deps; -dd suppresses that entirely. The installed system satisfies
+    #   deps via its own pacman + internet access.
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" \
+        pacman -U --noconfirm --noscriptlet -dd \
+        "/root/$(basename "${PKG_LINUX}")" \
+        "/root/$(basename "${PKG_HEADERS}")"
 
-# mkinitcpio may exit non-zero for missing-firmware warnings even though the
-# images are generated successfully. Run it, show output, then verify by
-# checking that the output files actually exist.
-sudo arch-chroot "${SQUASHFS_ROOTFS}" mkinitcpio -p linux-jarvisos 2>&1 \
-    | tee /dev/stderr | tail -5 || true
+    # Restore CheckSpace
+    if [ "${RESTORE_CHECKSPACE:-0}" = "1" ]; then
+        sudo sed -i 's/^#CheckSpace/CheckSpace/' "${SQUASHFS_ROOTFS}/etc/pacman.conf"
+    fi
 
-# Verify generated images (the real success criterion)
-INITRAMFS_MAIN="${SQUASHFS_ROOTFS}/boot/initramfs-linux-jarvisos.img"
-INITRAMFS_FB="${SQUASHFS_ROOTFS}/boot/initramfs-linux-jarvisos-fallback.img"
+    # Clean up staged packages from rootfs
+    sudo rm -f "${SQUASHFS_ROOTFS}/root/linux-jarvisos"*.pkg.tar.zst
 
-if ! sudo test -f "${INITRAMFS_MAIN}"; then
-    echo -e "${RED}FATAL: initramfs-linux-jarvisos.img was not created${NC}" >&2
-    sudo ls -lah "${SQUASHFS_ROOTFS}/boot/" || true
-    exit 1
-fi
+    echo -e "${GREEN}✓ linux-jarvisos installed into rootfs via pacman${NC}"
+    echo -e "${GREEN}✓ linux-jarvisos-headers installed into rootfs via pacman${NC}"
 
-echo -e "${GREEN}✓ Initramfs generated${NC}"
+    # ── Generate initramfs ────────────────────────────────────────────────────
+    echo ""
+    echo -e "${BLUE}Generating initramfs for linux-jarvisos...${NC}"
+    echo -e "${BLUE}(Uses live-boot mkinitcpio.conf — includes archiso/memdisk hooks)${NC}"
 
-# ── Backup kernel files for step 7 ───────────────────────────────────────────
-echo -e "${BLUE}Preserving linux-jarvisos kernel files for ISO build (step 7)...${NC}"
-mkdir -p "${KERNEL_BACKUP_DIR}"
+    # mkinitcpio may exit non-zero for missing-firmware warnings even though the
+    # images are generated successfully. Run it, show output, then verify by
+    # checking that the output files actually exist.
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" mkinitcpio -p linux-jarvisos 2>&1 \
+        | tee /dev/stderr | tail -5 || true
 
-sudo cp "${SQUASHFS_ROOTFS}/boot/vmlinuz-linux-jarvisos" \
-        "${KERNEL_BACKUP_DIR}/"
-sudo cp "${SQUASHFS_ROOTFS}/boot/initramfs-linux-jarvisos.img" \
-        "${KERNEL_BACKUP_DIR}/"
+    # Verify generated images (the real success criterion)
+    INITRAMFS_MAIN="${SQUASHFS_ROOTFS}/boot/initramfs-linux-jarvisos.img"
 
-if sudo test -f "${SQUASHFS_ROOTFS}/boot/initramfs-linux-jarvisos-fallback.img"; then
-    sudo cp "${SQUASHFS_ROOTFS}/boot/initramfs-linux-jarvisos-fallback.img" \
+    if ! sudo test -f "${INITRAMFS_MAIN}"; then
+        echo -e "${RED}FATAL: initramfs-linux-jarvisos.img was not created${NC}" >&2
+        sudo ls -lah "${SQUASHFS_ROOTFS}/boot/" || true
+        exit 1
+    fi
+
+    echo -e "${GREEN}✓ Initramfs generated${NC}"
+
+    # ── Backup kernel files for step 7 ───────────────────────────────────────
+    echo -e "${BLUE}Preserving linux-jarvisos kernel files for ISO build (step 7)...${NC}"
+    mkdir -p "${KERNEL_BACKUP_DIR}"
+
+    sudo cp "${SQUASHFS_ROOTFS}/boot/vmlinuz-linux-jarvisos" \
             "${KERNEL_BACKUP_DIR}/"
+    sudo cp "${SQUASHFS_ROOTFS}/boot/initramfs-linux-jarvisos.img" \
+            "${KERNEL_BACKUP_DIR}/"
+
+    if sudo test -f "${SQUASHFS_ROOTFS}/boot/initramfs-linux-jarvisos-fallback.img"; then
+        sudo cp "${SQUASHFS_ROOTFS}/boot/initramfs-linux-jarvisos-fallback.img" \
+                "${KERNEL_BACKUP_DIR}/"
+    fi
+
+    # Fix ownership so step 7 can read without sudo
+    sudo chmod 644 "${KERNEL_BACKUP_DIR}"/vmlinuz-linux-jarvisos \
+                   "${KERNEL_BACKUP_DIR}"/initramfs-linux-jarvisos*.img 2>/dev/null || true
+    sudo chown -R "$(id -u):$(id -g)" "${KERNEL_BACKUP_DIR}"
+
+    KERNEL_SIZE=$(du -h "${KERNEL_BACKUP_DIR}/vmlinuz-linux-jarvisos" | cut -f1)
+    INITRAMFS_SIZE=$(du -h "${KERNEL_BACKUP_DIR}/initramfs-linux-jarvisos.img" | cut -f1)
 fi
-
-# Fix ownership so step 7 can read without sudo
-sudo chmod 644 "${KERNEL_BACKUP_DIR}"/vmlinuz-linux-jarvisos \
-               "${KERNEL_BACKUP_DIR}"/initramfs-linux-jarvisos*.img 2>/dev/null || true
-sudo chown -R "$(id -u):$(id -g)" "${KERNEL_BACKUP_DIR}"
-
-KERNEL_SIZE=$(du -h "${KERNEL_BACKUP_DIR}/vmlinuz-linux-jarvisos" | cut -f1)
-INITRAMFS_SIZE=$(du -h "${KERNEL_BACKUP_DIR}/initramfs-linux-jarvisos.img" | cut -f1)
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
@@ -302,9 +356,14 @@ echo -e "${BLUE}Kernel image   : vmlinuz-linux-jarvisos (${KERNEL_SIZE})${NC}"
 echo -e "${BLUE}Initramfs      : initramfs-linux-jarvisos.img (${INITRAMFS_SIZE})${NC}"
 echo -e "${BLUE}Modules dir    : /usr/lib/modules/${KERNELRELEASE}${NC}"
 echo ""
-echo -e "${GREEN}✓ Packages installed in rootfs via pacman${NC}"
-echo -e "${GREEN}✓ Calamares will install linux-jarvisos onto the target system${NC}"
-echo -e "${GREEN}✓ Stock linux kernel remains for live boot hardware compatibility${NC}"
+if [ "${HOST_INSTALL}" -eq 1 ]; then
+    echo -e "${GREEN}✓ Packages installed on host system via pacman${NC}"
+    echo -e "${GREEN}✓ Reboot and select linux-jarvisos from your bootloader${NC}"
+else
+    echo -e "${GREEN}✓ Packages installed in rootfs via pacman${NC}"
+    echo -e "${GREEN}✓ Calamares will install linux-jarvisos onto the target system${NC}"
+    echo -e "${GREEN}✓ Stock linux kernel remains for live boot hardware compatibility${NC}"
+fi
 echo ""
 echo -e "${BLUE}JARVIS kernel drivers included:${NC}"
 echo -e "${BLUE}  jarvis.ko        — /dev/jarvis AI query/response channel${NC}"

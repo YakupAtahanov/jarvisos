@@ -9,6 +9,7 @@ __pycache__/
 build.config
 
 archlinux-2025.11.01-x86_64.iso
+cachyos-*.iso
 
 # Distribution / packaging
 .Python
@@ -223,3 +224,4 @@ CLAUDE.md
 FIRMWARE_FIXES.md
 *.png
 error.txt
+*.zst

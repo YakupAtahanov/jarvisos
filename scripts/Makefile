@@ -1,24 +1,44 @@
 # JARVIS OS ISO Build Orchestrator
 # Simple Makefile to orchestrate the step-by-step ISO build process
-include build.config
 
-# Validate required variables
-ifeq ($(strip $(SCRIPTS_DIR)),)
-    $(error SCRIPTS_DIR not set in build.config)
+# ── Locate project root and build.config ──────────────────────────────────────
+# This Makefile lives in scripts/.  Go up one level to reach the project root.
+_MKDIR       := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+PROJECT_ROOT := $(realpath $(_MKDIR)/..)
+_CFGFILE     := $(PROJECT_ROOT)/build.config
+
+ifeq ($(wildcard $(_CFGFILE)),)
+    $(error build.config not found at $(_CFGFILE))
 endif
-ifeq ($(strip $(PROJECT_ROOT)),)
-    $(error PROJECT_ROOT not set in build.config)
+
+# ── Read build.config via bash ────────────────────────────────────────────────
+# "include build.config" treats it as Makefile syntax and cannot evaluate the
+# bash command substitution used for PROJECT_ROOT.  Instead, source it in a
+# bash subshell and echo each value we need.
+_BUILD_DIR_REL       := $(shell bash -c 'source "$(_CFGFILE)" && echo "$$BUILD_DIR"')
+_BUILD_DEPS_DIR_REL  := $(shell bash -c 'source "$(_CFGFILE)" && echo "$$BUILD_DEPS_DIR"')
+_SCRIPTS_DIR_REL     := $(shell bash -c 'source "$(_CFGFILE)" && echo "$$SCRIPTS_DIR"')
+_ISO_FILE_NAME       := $(shell bash -c 'source "$(_CFGFILE)" && echo "$$ISO_FILE"')
+_ISO_EXTRACT_DIR_REL := $(shell bash -c 'source "$(_CFGFILE)" && echo "$$ISO_EXTRACT_DIR"')
+
+# Validate that we read something meaningful
+ifeq ($(strip $(_ISO_FILE_NAME)),)
+    $(error ISO_FILE not found in $(_CFGFILE) — check build.config)
+endif
+ifeq ($(strip $(_BUILD_DIR_REL)),)
+    $(error BUILD_DIR not found in $(_CFGFILE) — check build.config)
 endif
 
-# Resolve SCRIPTS_DIR relative to PROJECT_ROOT (if not absolute)
-SCRIPTS_DIR := $(PROJECT_ROOT)$(SCRIPTS_DIR)
-
-# Use config values if set and non-empty, otherwise use defaults
-BUILD_DIR := $(PROJECT_ROOT)$(BUILD_DIR)
-BUILD_DEPS_DIR := $(PROJECT_ROOT)$(BUILD_DEPS_DIR)
-ISO_FILE := $(BUILD_DEPS_DIR)/$(ISO_FILE)
+# ── Construct full paths ───────────────────────────────────────────────────────
+BUILD_DIR       := $(PROJECT_ROOT)$(_BUILD_DIR_REL)
+BUILD_DEPS_DIR  := $(PROJECT_ROOT)$(_BUILD_DEPS_DIR_REL)
+SCRIPTS_DIR     := $(PROJECT_ROOT)$(_SCRIPTS_DIR_REL)
+ISO_FILE        := $(BUILD_DEPS_DIR)/$(_ISO_FILE_NAME)
 # ISO_EXTRACT_DIR is relative to BUILD_DIR (not PROJECT_ROOT)
-ISO_EXTRACT_DIR := $(BUILD_DIR)$(ISO_EXTRACT_DIR)
+ISO_EXTRACT_DIR := $(BUILD_DIR)$(_ISO_EXTRACT_DIR_REL)
+
+# Parallelism — override with: make JOBS=8 <target>  or  make -j8 <target>
+JOBS ?= $(shell nproc)
 
 # Colors
 RED := \033[0;31m
@@ -35,7 +55,7 @@ help:
 	@echo ""
 	@echo "Available steps:"
 	@echo "  $(GREEN)make prereq$(NC) - Install build prerequisites (step 0)"
-	@echo "  $(GREEN)make step1$(NC)  - Extract source Arch Linux ISO"
+	@echo "  $(GREEN)make step1$(NC)  - Extract source CachyOS ISO"
 	@echo "  $(GREEN)make step2$(NC)  - Unsquash filesystem from ISO"
 	@echo "  $(GREEN)make step3$(NC)  - Install KDE Plasma Wayland + all packages"
 	@echo "  $(GREEN)make step3b$(NC) - Build linux-jarvisos custom kernel (JARVIS drivers)"
@@ -51,9 +71,13 @@ help:
 	@echo "  $(GREEN)make list$(NC)   - List available scripts"
 	@echo "  $(GREEN)make clean$(NC)  - Clean build artifacts"
 	@echo ""
+	@echo "Options:"
+	@echo "  $(GREEN)JOBS=N$(NC)       - Parallel threads for kernel build and squashfs (default: nproc=$(JOBS))"
+	@echo "  Example: make JOBS=8 step3b"
+	@echo ""
 	@echo "$(YELLOW)Quick start:$(NC)"
 	@echo "  1. make prereq   (install host tools)"
-	@echo "  2. Place Arch ISO in build-deps/ and update ISO_FILE in build.config"
+	@echo "  2. Place CachyOS ISO in build-deps/ and set ISO_FILE in build.config"
 	@echo "  3. make all      (build the full ISO)"
 	@echo ""
 
@@ -149,7 +173,7 @@ step3b:
 		echo "$(RED)Error: Script not found: 03b-build-kernel.sh$(NC)"; \
 		exit 1; \
 	fi
-	@bash $(SCRIPTS_DIR)/03b-build-kernel.sh
+	@MAKEFLAGS="-j$(JOBS)" bash $(SCRIPTS_DIR)/03b-build-kernel.sh
 	@echo "$(GREEN)✓ Step 3b complete$(NC)"
 
 # Step 4: Bake JARVIS
@@ -179,7 +203,7 @@ step6:
 		echo "$(RED)Error: Script not found: 06-squash-fs.sh$(NC)"; \
 		exit 1; \
 	fi
-	@bash $(SCRIPTS_DIR)/06-squash-fs.sh $(BUILD_DIR)
+	@JOBS=$(JOBS) bash $(SCRIPTS_DIR)/06-squash-fs.sh $(BUILD_DIR)
 	@echo "$(GREEN)✓ Step 6 complete$(NC)"
 
 # Step 7: Rebuild ISO
@@ -235,10 +259,10 @@ rest:
 	if [ $$SKIP1 -eq 0 ]; then echo "$(BLUE)Running step 1...$(NC)"; bash $(SCRIPTS_DIR)/01-extract-iso.sh $(ISO_FILE) $(BUILD_DIR) && RAN=1 || exit 1; fi; \
 	if [ $$SKIP2 -eq 0 ]; then echo "$(BLUE)Running step 2...$(NC)"; bash $(SCRIPTS_DIR)/02-unsquash-fs.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
 	if [ $$SKIP3 -eq 0 ]; then echo "$(BLUE)Running step 3...$(NC)"; bash $(SCRIPTS_DIR)/03-bake-wayland.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
-	if [ $$SKIP3B -eq 0 ]; then echo "$(BLUE)Running step 3b...$(NC)"; bash $(SCRIPTS_DIR)/03b-build-kernel.sh && RAN=1 || exit 1; fi; \
+	if [ $$SKIP3B -eq 0 ]; then echo "$(BLUE)Running step 3b...$(NC)"; MAKEFLAGS="-j$(JOBS)" bash $(SCRIPTS_DIR)/03b-build-kernel.sh && RAN=1 || exit 1; fi; \
 	if [ $$SKIP4 -eq 0 ]; then echo "$(BLUE)Running step 4...$(NC)"; bash $(SCRIPTS_DIR)/04-bake-jarvis.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
 	if [ $$SKIP5 -eq 0 ]; then echo "$(BLUE)Running step 5...$(NC)"; bash $(SCRIPTS_DIR)/05-bake-calamares.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
-	if [ $$SKIP6 -eq 0 ]; then echo "$(BLUE)Running step 6...$(NC)"; bash $(SCRIPTS_DIR)/06-squash-fs.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
+	if [ $$SKIP6 -eq 0 ]; then echo "$(BLUE)Running step 6...$(NC)"; JOBS=$(JOBS) bash $(SCRIPTS_DIR)/06-squash-fs.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
 	if [ $$SKIP7 -eq 0 ]; then echo "$(BLUE)Running step 7...$(NC)"; bash $(SCRIPTS_DIR)/07-rebuild-iso.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
 	if [ $$RAN -eq 0 ]; then \
 		echo "$(GREEN)All steps already completed! Nothing to do.$(NC)"; \
