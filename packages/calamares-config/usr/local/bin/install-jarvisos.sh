@@ -41,12 +41,12 @@ need_root() {
 
 check_deps() {
     local missing=()
-    for cmd in dialog parted mkfs.fat arch-chroot genfstab rsync blkid lsblk; do
+    for cmd in dialog parted mkfs.fat arch-chroot genfstab rsync blkid lsblk sgdisk wipefs; do
         command -v "${cmd}" >/dev/null 2>&1 || missing+=("${cmd}")
     done
     if [ ${#missing[@]} -gt 0 ]; then
         echo "Installing missing tools: ${missing[*]}"
-        pacman -S --noconfirm --needed arch-install-scripts parted dosfstools dialog rsync 2>/dev/null || true
+        pacman -S --noconfirm --needed arch-install-scripts parted dosfstools dialog rsync gptfdisk 2>/dev/null || true
     fi
 }
 
@@ -419,7 +419,8 @@ ensure_kernel() {
 generate_fstab() {
     d_infobox "fstab" "Generating /etc/fstab..."
     mkdir -p "${MOUNT_ROOT}/etc"
-    genfstab -U "${MOUNT_ROOT}" >> "${MOUNT_ROOT}/etc/fstab"
+    # Use > not >> — rsync already copied the live system's fstab; overwrite it
+    genfstab -U "${MOUNT_ROOT}" > "${MOUNT_ROOT}/etc/fstab"
     ok "fstab generated"
 }
 
@@ -438,6 +439,8 @@ USER_PASS="$3"
 ROOT_PASS="$4"
 BOOT_LOADER="$5"
 FS_TYPE="$6"
+
+warn() { echo "WARNING: $*" >&2; }
 
 # ── Timezone / locale ──────────────────────────────────────────────────────
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime
@@ -501,14 +504,21 @@ rm -f /etc/polkit-1/rules.d/50-liveuser.rules 2>/dev/null || true
 rm -f /boot/vmlinuz-linux /boot/initramfs-linux.img /boot/initramfs-linux-fallback.img
 rm -f /etc/mkinitcpio.d/linux.preset 2>/dev/null || true
 
+# ── Fix mkinitcpio.conf for installed system ───────────────────────────────
+# The live ISO's mkinitcpio.conf has archiso/memdisk hooks (live boot only)
+# and is MISSING block + filesystems hooks. Without block+filesystems the
+# installed system cannot find or mount its root partition → kernel panic.
+# Replace with a clean installed-system hook set.
+sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf kms keyboard keymap block filesystems)/' \
+    /etc/mkinitcpio.conf
+
 # ── mkinitcpio ────────────────────────────────────────────────────────────
-# Check if linux-jarvisos preset exists; if not, create a minimal one
 if [ -f /etc/mkinitcpio.d/linux-jarvisos.preset ]; then
     mkinitcpio -p linux-jarvisos || warn "mkinitcpio failed — boot may require manual fix"
 elif [ -f /boot/initramfs-linux-jarvisos.img ]; then
     echo "linux-jarvisos initramfs already present, skipping rebuild"
 else
-    echo "WARNING: No linux-jarvisos preset or initramfs found — bootloader may not work"
+    warn "No linux-jarvisos preset or initramfs found — bootloader may not work"
 fi
 
 # ── Enable required services ───────────────────────────────────────────────
@@ -585,23 +595,18 @@ LCONF
         local FS_OPTS="rw quiet splash"
         [ "${FS_TYPE}" = "btrfs" ] && FS_OPTS="rw quiet splash rootflags=subvol=@"
 
-        cat > "${MOUNT_ROOT}/boot/loader/entries/jarvisos.conf" <<ENTRY
-title   JARVIS OS
-linux   /vmlinuz-linux-jarvisos
-initrd  /intel-ucode.img
-initrd  /amd-ucode.img
-initrd  /initramfs-linux-jarvisos.img
-options root=UUID=${ROOT_UUID} ${FS_OPTS}
-ENTRY
+        # Build microcode initrd lines — only include files that actually exist
+        local UCODE_LINES=""
+        [ -f "${MOUNT_ROOT}/boot/intel-ucode.img" ] && UCODE_LINES+="initrd  /intel-ucode.img\n"
+        [ -f "${MOUNT_ROOT}/boot/amd-ucode.img" ]   && UCODE_LINES+="initrd  /amd-ucode.img\n"
 
-        cat > "${MOUNT_ROOT}/boot/loader/entries/jarvisos-fallback.conf" <<ENTRYF
-title   JARVIS OS (fallback initramfs)
-linux   /vmlinuz-linux-jarvisos
-initrd  /intel-ucode.img
-initrd  /amd-ucode.img
-initrd  /initramfs-linux-jarvisos-fallback.img
-options root=UUID=${ROOT_UUID} ${FS_OPTS}
-ENTRYF
+        printf "title   JARVIS OS\nlinux   /vmlinuz-linux-jarvisos\n%sinitrd  /initramfs-linux-jarvisos.img\noptions root=UUID=%s %s\n" \
+            "${UCODE_LINES}" "${ROOT_UUID}" "${FS_OPTS}" \
+            > "${MOUNT_ROOT}/boot/loader/entries/jarvisos.conf"
+
+        printf "title   JARVIS OS (fallback initramfs)\nlinux   /vmlinuz-linux-jarvisos\n%sinitrd  /initramfs-linux-jarvisos-fallback.img\noptions root=UUID=%s %s\n" \
+            "${UCODE_LINES}" "${ROOT_UUID}" "${FS_OPTS}" \
+            > "${MOUNT_ROOT}/boot/loader/entries/jarvisos-fallback.conf"
 
         ok "systemd-boot installed"
 

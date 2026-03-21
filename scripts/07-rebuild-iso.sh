@@ -898,18 +898,23 @@ SYSLINUX_CACHYOS_EOF
     fi
 fi
 
-# CRITICAL FIX: Update syslinux boot parameters to use archisolabel
-# The original Arch ISO uses archisosearchuuid with a timestamp UUID.
-# When we rebuild the ISO with xorriso, it gets a NEW UUID, so the old one
-# no longer matches. This prevents archiso from finding & mounting the boot
-# device at /run/archiso/bootmnt/, which breaks Calamares unpackfs.
-# Fix: replace archisosearchuuid=<old> with archisolabel=<our-label>.
-echo -e "${BLUE}Fixing syslinux boot parameters (archisosearchuuid → archisolabel)...${NC}"
-for cfg in boot/syslinux/archiso_sys-linux.cfg boot/syslinux/archiso_pxe-linux.cfg; do
+# CRITICAL FIX: Update ALL boot configs to use archisolabel instead of archisosearchuuid
+# The original CachyOS/Arch ISO embeds a timestamp UUID (e.g. 2026-03-08-13-36-02-00)
+# that is specific to the source ISO creation date. When we rebuild with xorriso the
+# volume label changes (JARVISOS_YYYYMM) so the old UUID no longer matches anything on
+# the boot medium → archiso hook searches every block device and gives up with
+# "ERROR: Device '...' not found". Fix: switch every boot config to archisolabel=
+# which matches the volume label we pass to xorriso -volid.
+# NOTE: grub.cfg is the primary bootloader for CachyOS ISOs and MUST be included here.
+echo -e "${BLUE}Fixing ALL boot configs (archisosearchuuid → archisolabel)...${NC}"
+for cfg in boot/syslinux/archiso_sys-linux.cfg \
+            boot/syslinux/archiso_pxe-linux.cfg \
+            boot/grub/grub.cfg \
+            boot/grub/loopback.cfg; do
     if [ -f "${cfg}" ]; then
-        # Replace archisosearchuuid=<anything> with archisolabel=JARVISOS_202601
+        # Replace archisosearchuuid=<anything> with archisolabel=<our label>
         sed -i "s/archisosearchuuid=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
-        # Also normalise any existing archisolabel to our volume ID
+        # Normalise any existing archisolabel to our volume ID
         sed -i "s/archisolabel=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
         echo -e "${GREEN}✓ Fixed $(basename "${cfg}")${NC}"
     fi
@@ -1003,7 +1008,16 @@ mkdir -p "${OUTPUT_DIR}" || {
 }
 
 # Update boot entries to use archisolabel (volume label we control)
-echo -e "${BLUE}Updating boot entries to use archisolabel...${NC}"
+echo -e "${BLUE}Updating boot entries to use archisolabel (second pass)...${NC}"
+
+# Update grub configs (second pass to catch any that were regenerated above)
+for cfg in boot/grub/grub.cfg boot/grub/loopback.cfg; do
+    if [ -f "${cfg}" ]; then
+        sed -i "s/archisosearchuuid=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
+        sed -i "s/archisolabel=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
+        echo -e "${GREEN}✓ Updated $(basename "${cfg}")${NC}"
+    fi
+done
 
 # Update ISO root loader entries
 if [ -d "loader/entries" ]; then
