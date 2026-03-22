@@ -180,20 +180,98 @@ echo -e "${BLUE}Ollama installed - service will autostart via XDG autostart on l
 # the ISO under 4 GB; users need internet access on first launch.
 echo -e "${BLUE}Skipping Ollama model pre-pull — model downloads on first boot via jarvis-setup.service${NC}"
 
-# Step 5: Create jarvis user and group
+# Step 5: Create jarvis user, group, and supplementary group memberships
 echo -e "${BLUE}Creating jarvis user and group...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     # Create group if it doesn't exist
     if ! getent group jarvis >/dev/null 2>&1; then
         groupadd -r jarvis
     fi
-    
+
     # Create user if it doesn't exist
     if ! getent passwd jarvis >/dev/null 2>&1; then
         useradd -r -g jarvis -d /var/lib/jarvis -s /sbin/nologin \
                 -c 'JARVIS AI Assistant' jarvis
     fi
+
+    # Add jarvis to supplementary groups needed for autonomous system management.
+    # Groups that don't exist on this system are silently skipped.
+    #   audio          — PipeWire / ALSA microphone and speaker access
+    #   video          — GPU / DRM device access
+    #   network        — NetworkManager CLI socket access
+    #   systemd-journal — journalctl log reading without root
+    #   storage        — block device and storage access
+    #   optical        — CD/DVD device access
+    for grp in audio video network systemd-journal storage optical; do
+        if getent group \"\$grp\" >/dev/null 2>&1; then
+            usermod -aG \"\$grp\" jarvis
+        fi
+    done
 "
+
+# Step 5b: sudoers drop-in — allow jarvis to run system management commands
+# without a password.  The jarvis policy engine (SAFE/ELEVATED/DANGEROUS/
+# FORBIDDEN tiers) is the primary access-control layer; these rules only
+# permit the specific commands the agent is designed to execute autonomously.
+echo -e "${BLUE}Installing sudoers rules for jarvis...${NC}"
+sudo tee "${SQUASHFS_ROOTFS}/etc/sudoers.d/10-jarvis" > /dev/null << 'SUDOERS_EOF'
+# JARVIS daemon — autonomous system management
+# The jarvis policy engine enforces SAFE/ELEVATED/DANGEROUS/FORBIDDEN tier
+# checks before any command is dispatched.  These NOPASSWD rules allow
+# non-interactive execution of the commands JARVIS is designed to manage.
+Defaults:jarvis !requiretty, !lecture, passwd_tries=0
+
+jarvis ALL=(ALL) NOPASSWD: \
+    /usr/bin/pacman,        \
+    /usr/bin/systemctl,     \
+    /usr/bin/journalctl,    \
+    /usr/bin/nmcli,         \
+    /usr/bin/timedatectl,   \
+    /usr/bin/localectl,     \
+    /usr/bin/hostnamectl,   \
+    /usr/bin/modprobe,      \
+    /usr/bin/sysctl,        \
+    /usr/bin/chmod,         \
+    /usr/bin/chown,         \
+    /usr/bin/mkdir,         \
+    /usr/bin/tee,           \
+    /usr/bin/cp,            \
+    /usr/bin/mv,            \
+    /usr/bin/rm
+SUDOERS_EOF
+sudo chmod 440 "${SQUASHFS_ROOTFS}/etc/sudoers.d/10-jarvis"
+
+# Step 5c: polkit rules — allow jarvis to manage system resources via D-Bus
+# without interactive prompts (NetworkManager, systemd units, timedatectl, etc.)
+echo -e "${BLUE}Installing polkit rules for jarvis...${NC}"
+sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/polkit-1/rules.d"
+sudo tee "${SQUASHFS_ROOTFS}/etc/polkit-1/rules.d/49-jarvis.rules" > /dev/null << 'POLKIT_EOF'
+/* JARVIS daemon — D-Bus authorisation
+ *
+ * Allows the jarvis system user to manage systemd units, network connections,
+ * and basic system settings through D-Bus without interactive prompts.
+ * The jarvis policy engine enforces SAFE/ELEVATED/DANGEROUS tier checks
+ * before any D-Bus call reaches this layer.
+ */
+polkit.addRule(function(action, subject) {
+    if (subject.user === "jarvis") {
+        var allowed = [
+            "org.freedesktop.systemd1",
+            "org.freedesktop.NetworkManager",
+            "org.freedesktop.timedate1",
+            "org.freedesktop.locale1",
+            "org.freedesktop.hostname1",
+            "org.freedesktop.login1",
+        ];
+        for (var i = 0; i < allowed.length; i++) {
+            if (action.id.indexOf(allowed[i]) === 0) {
+                return polkit.Result.YES;
+            }
+        }
+    }
+});
+POLKIT_EOF
+sudo chmod 644 "${SQUASHFS_ROOTFS}/etc/polkit-1/rules.d/49-jarvis.rules"
 
 # Step 6: Create directories
 echo -e "${BLUE}Creating JARVIS directories...${NC}"
@@ -474,7 +552,14 @@ Wants=network.target ollama.service
 Type=simple
 User=jarvis
 Group=jarvis
-SupplementaryGroups=audio
+# Hardware and system access groups needed for autonomous operation:
+#   audio          — PipeWire microphone/speaker
+#   video          — GPU/DRM access
+#   network        — NetworkManager CLI socket
+#   systemd-journal — journalctl log reading
+#   storage        — block device access
+SupplementaryGroups=audio video network systemd-journal storage
+
 WorkingDirectory=/usr/lib/jarvis
 RuntimeDirectory=jarvis
 RuntimeDirectoryMode=0775
@@ -485,19 +570,29 @@ RestartSec=10
 TimeoutStartSec=60
 TimeoutStopSec=30
 
-# Security settings (ProtectHome and MemoryDenyWriteExecute removed —
-# ProtectHome blocks PipeWire socket access, MemoryDenyWriteExecute breaks onnxruntime)
-NoNewPrivileges=yes
+# /dev/jarvis requires CAP_SYS_ADMIN (kernel driver enforces it).
+# CAP_NET_ADMIN allows direct network interface operations.
+# CAP_SYS_NICE allows rtkit real-time scheduling for PipeWire audio.
+# These are granted as ambient capabilities so the daemon inherits them
+# at exec without needing a setuid binary.
+AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_SYS_NICE
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_SYS_NICE
+
+# NoNewPrivileges and RestrictSUIDSGID are intentionally absent:
+# the daemon spawns `sudo` for system management (pacman, systemctl, etc.).
+# sudo is a setuid binary — NO_NEW_PRIVS makes setuid a no-op, breaking it.
+# The jarvis policy engine (SAFE/ELEVATED/DANGEROUS/FORBIDDEN) and the
+# sudoers rules in /etc/sudoers.d/10-jarvis are the access-control layer.
+
+# ProtectSystem is intentionally absent: package management (pacman) writes
+# to /usr, /etc, and /var.  ProtectSystem=strict would create a read-only
+# bind-mount namespace that blocks those writes even when running as root
+# via sudo.
+
 PrivateTmp=yes
-ProtectSystem=strict
-ReadWritePaths=/var/lib/jarvis /var/log/jarvis /run/jarvis /tmp
 ProtectKernelTunables=yes
-ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictRealtime=yes
-RestrictSUIDSGID=yes
-SystemCallFilter=@system-service
-SystemCallErrorNumber=EPERM
 
 # Resource limits
 LimitNOFILE=65536
