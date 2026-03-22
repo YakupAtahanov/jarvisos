@@ -25,7 +25,7 @@ COOLDOWN     = 5.0   # seconds between terminal opens — prevents double-open
 JARVIS_CMD = (
     "source /var/lib/jarvis/venv/bin/activate && "
     "export PYTHONPATH=/usr/lib && "
-    "export LOG_LEVEL=WARNING && "
+    "export JARVIS_ACTIVATED=1 && "
     "jarvis run; "
     "echo; read -rp 'Press Enter to close...'"
 )
