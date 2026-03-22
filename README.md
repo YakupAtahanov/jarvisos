@@ -1,575 +1,491 @@
-# JARVIS OS - AI-Native Linux Distribution
+# JARVIS OS — AI-Native Linux Distribution
 
-**The world's first operating system designed around AI voice interaction.**
+**The world's first operating system with a custom AI-integrated kernel.**
 
-JARVIS OS is a custom Arch Linux-based distribution where voice is the primary interface. The AI assistant (JARVIS) handles system administration, file management, and system control through natural language, creating a revolutionary computing experience.
+JARVIS OS is a custom Linux distribution built on a CachyOS/Arch base where an AI assistant handles system administration, file management, and hardware control through natural language — voice or text. The kernel itself speaks to the AI through a dedicated character device (`/dev/jarvis`), making the AI a first-class OS citizen rather than a userspace afterthought.
 
-## 🎯 **What is JARVIS OS?**
+> **Status**: Work in progress. The custom kernel (`linux-jarvisos`), JARVIS driver, and agent runtime are functional. The full ISO build pipeline builds successfully; live-boot testing and the Calamares installer are still being refined.
 
-JARVIS OS is a custom Linux distribution built on Arch Linux where:
-- **Voice is the primary interface** - Users talk to their computer instead of using mouse/keyboard
-- **AI handles system administration** - JARVIS manages files, installs software, and controls the system
-- **Dynamic capability discovery** - The system automatically learns new tools via SuperMCP
-- **Privacy-first design** - All AI processing happens locally on your device with Ollama
-- **Professional desktop environment** - KDE Plasma Wayland provides a modern GUI when needed
-- **Easy installation** - Calamares installer for straightforward setup
+---
 
-## 🏗️ **Project Structure**
+## What Makes This Different
+
+Most "AI-integrated" desktops are just a chatbot running on top of a stock kernel. JARVIS OS integrates the AI at the kernel level:
+
+| Layer | What it does |
+|-------|-------------|
+| `jarvis.ko` | Character device `/dev/jarvis` — kernel posts structured queries, AI daemon reads and responds |
+| `jarvis_sysmon` | Real-time CPU/memory/thermal metrics via ioctl and sysfs — AI uses these to pick the right LLM model size |
+| `jarvis_policy` | Tiered action security engine (SAFE / ELEVATED / DANGEROUS / FORBIDDEN) with kernel-enforced rate limiting |
+| `jarvis_keys` | Secure API-key storage in the Linux kernel keyring — cloud LLM keys never touch disk |
+| `jarvis_dibs` | Zero-copy DIBS buffer sharing for large inference payloads |
+
+---
+
+## Project Structure
 
 ```
 jarvisos/
-├── Project-JARVIS/           # AI voice assistant (submodule)
-├── packages/                 # Custom packages
-│   └── calamares-config/    # Calamares installer configuration
-├── scripts/                  # Build scripts (step-by-step process)
-│   ├── Makefile             # Build orchestration
-│   ├── build.config         # Build configuration
-│   ├── 01-extract-iso.sh    # Extract base Arch Linux ISO
-│   ├── 02-unsquash-fs.sh    # Extract SquashFS rootfs
-│   ├── 03-bake-wayland.sh   # Install KDE Plasma Wayland
-│   ├── 04-bake-jarvis.sh    # Install Project-JARVIS
-│   ├── 05-bake-calamares.sh # Install Calamares installer
-│   ├── 06-squash-fs.sh      # Rebuild SquashFS
-│   ├── 07-rebuild-iso.sh    # Rebuild bootable ISO
-│   └── booter.sh            # QEMU launcher for testing
-├── build-deps/              # Build dependencies (ISO files)
-└── README.md                # This file
+├── linux/                        # linux-jarvisos kernel source (submodule, branch jarvisos-6.19-stable)
+│   ├── drivers/jarvis/           # JARVIS AI kernel drivers
+│   │   ├── jarvis_core.c         # /dev/jarvis misc device + query ring buffer
+│   │   ├── jarvis_sysmon.c       # CPU/memory/thermal metrics
+│   │   ├── jarvis_policy.c       # AI action security policy engine
+│   │   ├── jarvis_keys.c         # Kernel keyring for API key storage
+│   │   └── jarvis_dibs.c         # Zero-copy DIBS buffer integration
+│   ├── include/uapi/linux/jarvis.h  # Userspace API (ioctls, structs, enums)
+│   └── arch/x86/configs/jarvisos.config  # JARVIS kernel config fragment
+├── packages/
+│   ├── linux-jarvisos/           # Arch PKGBUILD for the custom kernel
+│   │   ├── PKGBUILD              # Produces linux-jarvisos + linux-jarvisos-headers
+│   │   └── linux-jarvisos.install
+│   └── calamares-config/         # Calamares installer branding + configuration
+├── Project-JARVIS/               # JARVIS daemon + tooling (submodule)
+├── scripts/                      # ISO build pipeline
+│   ├── build.config              # Build paths and ISO filename
+│   ├── Makefile                  # Orchestrates all build steps
+│   ├── 00-install-prereq.sh      # Install host build tools (Arch/Fedora/Ubuntu/openSUSE)
+│   ├── 01-extract-iso.sh         # Extract base CachyOS ISO
+│   ├── 02-unsquash-fs.sh         # Extract SquashFS rootfs
+│   ├── 03-bake-wayland.sh        # Install KDE Plasma Wayland + all system packages
+│   ├── 03b-build-kernel.sh       # Build linux-jarvisos packages and install into rootfs
+│   ├── 04-bake-jarvis.sh         # Install Project-JARVIS daemon
+│   ├── 05-bake-calamares.sh      # Install Calamares installer
+│   ├── 06-squash-fs.sh           # Repack SquashFS
+│   ├── 07-rebuild-iso.sh         # Assemble final bootable ISO
+│   └── booter.sh                 # QEMU launcher for local testing
+├── jarvis_agent.py               # Standalone JARVIS agent runtime (voice + text → Ollama → shell)
+├── test-jarvis-ollama.sh         # Bootstrap launcher for the standalone agent
+├── build-deps/                   # Place your CachyOS source ISO here
+└── build/                        # All build artifacts land here (gitignored)
 ```
 
-## 🚀 **Quick Start - Building JARVIS OS**
+---
 
-### **Prerequisites**
+## Architecture
 
-- **Host System**: Fedora or any Linux distribution with these tools:
-  - `arch-install-scripts` (for arch-chroot)
-  - `squashfs-tools` (for mksquashfs/unsquashfs)
-  - `xorriso` (for ISO creation)
-  - `qemu-system-x86` (for testing)
-- **Hardware Requirements**:
-  - 16GB+ RAM (for building)
-  - 50GB+ free disk space
-  - Internet connection
-  - Root/sudo access
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        JARVIS OS Architecture                        │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  🎤 Voice Input ──► Vosk STT ──► wake phrase "Hey JARVIS"          │
+│  ⌨️  Text Input  ─────────────────────────────────┐                 │
+│                                                   ▼                 │
+│                              Ollama (local LLM) ◄─── sysmon picks  │
+│                                   │                   model size    │
+│                                   ▼                                 │
+│                         Plan (JSON: commands + tiers)               │
+│                                   │                                 │
+│                    ┌──────────────▼──────────────────┐             │
+│                    │   JARVIS Policy Gate             │             │
+│                    │   SAFE ──────► run silently      │             │
+│                    │   ELEVATED ──► run + audit log   │             │
+│                    │   DANGEROUS ─► user confirm first│             │
+│                    │   FORBIDDEN ─► hard block        │             │
+│                    └──────────────┬──────────────────┘             │
+│                                   │                                 │
+│                          Shell execution (PTY)                      │
+│                                   │                                 │
+│               ┌───────────────────▼────────────────────┐           │
+│               │            linux-jarvisos kernel        │           │
+│               │  /dev/jarvis ◄──► jarvis.ko             │           │
+│               │  /sys/class/misc/jarvis/sysmon/*        │           │
+│               │  /sys/class/misc/jarvis/policy/*        │           │
+│               └───────────────────────────────────────┘            │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
-### **Step 1: Initial Setup**
+---
+
+## Building the linux-jarvisos Kernel
+
+> **Requirement: Arch-based host system.** The kernel build uses `makepkg`, which is Arch-specific. The `pacman -U` install step requires `pacman`. You cannot build and install this kernel on a Fedora or Debian host — use an Arch, Manjaro, EndeavourOS, or CachyOS machine.
+
+### Prerequisites
 
 ```bash
-# Clone repository with submodules
+# Install kernel build tools
+sudo pacman -S base-devel bc flex bison openssl libelf pahole ccache
+
+# Optional but strongly recommended — makes incremental rebuilds ~5–10× faster
+sudo pacman -S ccache
+```
+
+### Initialize the kernel submodule
+
+```bash
 git clone --recursive https://github.com/YourUsername/jarvisos.git
 cd jarvisos
 
-# Install build dependencies (Fedora)
-sudo dnf install arch-install-scripts squashfs-tools xorriso qemu-system-x86
-
-# Download base Arch Linux ISO
-cd build-deps
-wget https://mirror.rackspace.com/archlinux/iso/latest/archlinux-x86_64.iso
-# Rename to match your config (e.g., archlinux-2025.11.01-x86_64.iso)
-cd ..
+# If already cloned without --recursive:
+git submodule update --init linux
 ```
 
-### **Step 2: Configure Build System**
+The `linux/` submodule tracks the `jarvisos-6.19-stable` branch, which is the upstream 6.19 kernel tree plus the JARVIS driver tree under `drivers/jarvis/`.
+
+### Build modes
+
+#### Option A — Build and install on your running system (for development / daily use)
+
+This is the fastest way to run the JARVIS kernel on your own machine. The script builds the packages on the host and installs them with `pacman`:
+
+```bash
+cd scripts
+bash 03b-build-kernel.sh --host-install
+```
+
+After install, reboot and select **linux-jarvisos** from your bootloader (GRUB or systemd-boot). The GRUB entry is added automatically by the `linux-jarvisos.install` hook.
+
+**Build time**: 20–60 min on first run. Subsequent runs with ccache take 2–5 min.
+
+#### Option B — Build packages only (ISO pipeline or manual inspection)
+
+```bash
+cd scripts
+bash 03b-build-kernel.sh
+# Packages land in build/kernel-pkg/
+# linux-jarvisos-*.pkg.tar.zst
+# linux-jarvisos-headers-*.pkg.tar.zst
+```
+
+#### Skip recompilation when packages are already built
+
+```bash
+SKIP_KERNEL_BUILD=1 bash 03b-build-kernel.sh --host-install
+```
+
+### What gets built
+
+| Package | Contents |
+|---------|----------|
+| `linux-jarvisos` | `vmlinuz-linux-jarvisos`, kernel modules, mkinitcpio preset |
+| `linux-jarvisos-headers` | Full build tree for out-of-tree modules, JARVIS UAPI header, JARVIS/DIBS driver headers |
+
+### Verifying the kernel is active
+
+```bash
+uname -r
+# Should output something like: 6.19.8-jarvisos-g5fffde5bcf9e
+
+# Verify /dev/jarvis is available
+ls -l /dev/jarvis
+
+# Read live hardware metrics from the kernel sysfs interface
+cat /sys/class/misc/jarvis/sysmon/cpu_load
+cat /sys/class/misc/jarvis/sysmon/mem_avail
+cat /sys/class/misc/jarvis/sysmon/thermal
+
+# Inspect the AI security policy table loaded in the kernel
+cat /sys/class/misc/jarvis/policy/policy_table
+```
+
+### JARVIS kernel config options
+
+The `packages/linux-jarvisos/PKGBUILD` applies these config symbols on top of the host kernel config:
+
+| Symbol | Purpose |
+|--------|---------|
+| `CONFIG_JARVIS=m` | Main JARVIS driver module |
+| `CONFIG_JARVIS_SYSMON=y` | CPU/memory/thermal sysfs metrics |
+| `CONFIG_JARVIS_POLICY=y` | AI action security policy engine |
+| `CONFIG_JARVIS_KEYS=y` | Kernel keyring for API key storage |
+| `CONFIG_JARVIS_SYSFS_METRICS=y` | Expose state/model/pending via sysfs |
+| `CONFIG_JARVIS_DIBS=y` | Zero-copy DIBS buffer integration (if DIBS present) |
+| `CONFIG_EFI_STUB=y` | Required for UEFI boot (PE/COFF image) |
+| `CONFIG_SQUASHFS=y` | Required for archiso live boot |
+| `CONFIG_OVERLAY_FS=y` | Required for archiso overlay mount |
+
+---
+
+## Running the JARVIS Agent (Standalone — No ISO needed)
+
+The `jarvis_agent.py` runtime works on any Linux system with Ollama installed. It does not require the custom kernel, but if `linux-jarvisos` is running it can read from `/sys/class/misc/jarvis/sysmon/` for hardware-aware model selection.
+
+### Quick start
+
+```bash
+# Ensure Ollama is running
+systemctl start ollama
+
+# Launch the agent (handles all setup automatically)
+./test-jarvis-ollama.sh
+```
+
+The launcher will:
+1. Install system dependencies (`portaudio`, `python-pip`)
+2. Create a Python venv with `vosk`, `pyaudio`, `requests`
+3. Download the Vosk small English model (~45 MB) for offline STT
+4. Select an Ollama model based on available RAM
+5. Open a dedicated terminal window with the JARVIS agent
+
+### Selecting a model
+
+```bash
+# Force a specific model
+JARVIS_MODEL=qwen3:8b ./test-jarvis-ollama.sh
+
+# Point at a remote Ollama instance
+OLLAMA_URL=http://192.168.1.10:11434 ./test-jarvis-ollama.sh
+```
+
+### Agent commands
+
+| Input | What happens |
+|-------|-------------|
+| `sysmon` | Print current CPU%, RAM, temperature |
+| `update my system` | Plan `pacman -Syu`, show DANGEROUS confirmation, run on approval |
+| `Hey JARVIS <command>` | Voice wake phrase → transcribe → plan → execute |
+| `quit` / `exit` / Ctrl-C | Graceful shutdown |
+
+### Action security tiers
+
+Every command the AI plans is classified before execution:
+
+| Tier | Example | Behaviour |
+|------|---------|-----------|
+| SAFE | `df -h`, `systemctl status` | Runs silently |
+| ELEVATED | `systemctl restart NetworkManager` | Runs, writes audit entry to `/tmp/jarvis.log` |
+| DANGEROUS | `pacman -Syu`, `pacman -S htop` | Blocked until user types `y` |
+| FORBIDDEN | `rm -rf /`, `dd if=/dev/zero` | Hard-blocked unconditionally |
+
+---
+
+## Building the JarvisOS ISO
+
+> **Work in progress.** The build pipeline runs end-to-end, but live-boot reliability and the Calamares installer are still being stabilized. Expect rough edges.
+
+### Requirements
+
+- **Arch-based host** (Arch, Manjaro, EndeavourOS, CachyOS) — `makepkg` and `pacman` are required for the kernel build step
+- 16 GB+ RAM
+- 60 GB+ free disk space
+- Internet connection (packages are downloaded during build)
+- A CachyOS desktop ISO placed in `build-deps/`
+
+### Step 0 — Get the source ISO
+
+Download the CachyOS desktop ISO and place it in `build-deps/`:
+
+```
+build-deps/cachyos-desktop-linux-260308.iso
+```
+
+Update `scripts/build.config` if your filename differs:
+
+```bash
+ISO_FILE="cachyos-desktop-linux-260308.iso"
+PROJECT_ROOT="/absolute/path/to/jarvisos"
+```
+
+### Step 1 — Install host build tools
+
+```bash
+cd scripts
+sudo bash 00-install-prereq.sh
+```
+
+This detects your host distro (Arch/Fedora/Ubuntu/openSUSE) and installs `arch-install-scripts`, `squashfs-tools`, `xorriso`, `p7zip`, `dosfstools`, `fakeroot`, `git`, `curl`, and `python3`.
+
+### Step 2 — Run the full build
 
 ```bash
 cd scripts
 
-# Copy example configuration
-cp build.config.example build.config
-
-# Edit build.config and set your paths
-# Most importantly, set:
-#   PROJECT_ROOT="/absolute/path/to/jarvisos"
-#   ISO_FILE="archlinux-2025.11.01-x86_64.iso"
-nano build.config
-```
-
-**Example build.config:**
-```bash
-PROJECT_ROOT="/home/user/jarvisos"
-SCRIPTS_DIR="/scripts"
-BUILD_DIR="/build"
-BUILD_DEPS_DIR="/build-deps"
-ISO_EXTRACT_DIR="/iso-extract"
-ISO_FILE="archlinux-2025.11.01-x86_64.iso"
-JARVIS_ISO_FILE="jarvisos-*-x86_64.iso"
-```
-
-### **Step 3: Build JARVIS OS ISO**
-
-You can build the entire ISO in one command or run steps individually for debugging:
-
-#### **Option A: Build Everything (Recommended)**
-```bash
-# Run all build steps automatically
+# Build everything in sequence
 make all
 ```
 
-This will:
-1. Extract the base Arch Linux ISO
-2. Extract the SquashFS filesystem
-3. Install KDE Plasma Wayland desktop environment
-4. Install Project-JARVIS and dependencies
-5. Install Calamares installer
-6. Rebuild SquashFS with all changes
-7. Create the final bootable ISO
-
-**Build time: ~30-60 minutes** (depending on your system and internet speed)
-
-#### **Option B: Step-by-Step Build (For Debugging)**
+Or run steps individually when debugging:
 
 ```bash
-# Step 1: Extract ISO
-make step1
+make step1    # Extract CachyOS ISO
+make step2    # Unsquash rootfs → build/iso-rootfs/
+make step3    # Install KDE Plasma Wayland + all system packages into rootfs
+make step3b   # Build linux-jarvisos kernel + install into rootfs
+make step4    # Install Project-JARVIS daemon
+make step5    # Install Calamares installer
+make step6    # Repack rootfs into SquashFS
+make step7    # Assemble final bootable ISO → build/jarvisos-YYYYMMDD-x86_64.iso
 
-# Step 2: Unsquash filesystem
-make step2
-
-# Step 3: Install Wayland/KDE Plasma
-make step3
-
-# Step 4: Install JARVIS
-make step4
-
-# Step 5: Install Calamares (installer)
-make step5
-
-# Step 6: Rebuild SquashFS
-make step6
-
-# Step 7: Rebuild final ISO
-make step7
-
-# Check build status at any time
-make status
+make status   # Show which steps are complete
+make clean    # Remove all build artifacts
 ```
 
-### **Step 4: Test with QEMU**
+**Estimated total time**: 60–120 min depending on CPU and network (kernel compilation is the bottleneck).
+
+### Step 3 — Test in QEMU
 
 ```bash
-# Boot the ISO in QEMU
-./booter.sh
+# Boot with UEFI (recommended)
+./scripts/booter.sh
 
-# Or manually:
-qemu-system-x86_64 -cdrom ../build/jarvisos-*-x86_64.iso \
-    -boot d -m 4096 -enable-kvm
+# Or boot with BIOS
+./scripts/booter.sh --bios
 ```
 
-### **Step 5: Install to Physical Machine**
-
-1. Write ISO to USB drive:
-   ```bash
-   sudo dd if=build/jarvisos-*.iso of=/dev/sdX bs=4M status=progress
-   ```
-2. Boot from USB
-3. Follow Calamares installer prompts
-4. Reboot into installed system
-
-## 🎤 **Using JARVIS**
-
-### **After Installation**
-
-**Login credentials** (live ISO and default installation):
-- Username: `root` (live) or your created user
-- Password: `jarvis123` (live) or your set password
-
-### **First-Time Setup**
+### Step 4 — Write to USB
 
 ```bash
-# 1. Pull an Ollama model
-ollama pull llama3.2
-
-# 2. Configure JARVIS to use the model
-jarvis model -n 'llama3.2'
-
-# 3. Test JARVIS
-jarvis ask "Hello, how are you?"
-
-# 4. Start JARVIS voice service
-systemctl start jarvis
-
-# 5. Check service status
-systemctl status jarvis
-journalctl -u jarvis -f
+sudo dd if=build/jarvisos-*-x86_64.iso of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
-### **JARVIS Commands**
+Boot from USB and use the Calamares installer on the desktop.
 
+### What each script does
+
+#### `00-install-prereq.sh`
+Detects the host distro and installs all build tooling. Supports Arch, Fedora, Ubuntu, and openSUSE.
+
+#### `01-extract-iso.sh`
+Mounts the CachyOS source ISO and copies its contents into `build/iso-extract/`.
+
+#### `02-unsquash-fs.sh`
+Extracts the SquashFS rootfs into `build/iso-rootfs/` for modification via `arch-chroot`.
+
+#### `03-bake-wayland.sh`
+Heavy lifting: installs KDE Plasma Wayland, PipeWire audio, NetworkManager (wpa_supplicant backend), input drivers, comprehensive hardware firmware, creates the `liveuser` account with passwordless sudo, configures SDDM autologin, and sets up all systemd services needed for a working live desktop.
+
+#### `03b-build-kernel.sh`
+Builds the `linux-jarvisos` and `linux-jarvisos-headers` packages using `makepkg` on the host, then installs them into the rootfs via `pacman -U` in the chroot and regenerates the initramfs with the archiso/memdisk hooks. Backs up `vmlinuz-linux-jarvisos` and its initramfs to `build/kernel-files/` for step 7.
+
+#### `04-bake-jarvis.sh`
+Copies `Project-JARVIS` into the rootfs, creates the Python venv, installs Ollama, sets up the `jarvis.service` systemd unit, and places the CLI wrappers.
+
+#### `05-bake-calamares.sh`
+Installs Calamares and applies the JARVIS OS branding, partitioning, and post-install configuration.
+
+#### `06-squash-fs.sh`
+Repacks `build/iso-rootfs/` back into a SquashFS image with `zstd` compression. Removes the build-time `resolv.conf` and replaces it with a symlink to `systemd-resolved`'s stub.
+
+#### `07-rebuild-iso.sh`
+Assembles the final ISO using `xorriso`. Dynamically sizes `efiboot.img` to fit the UEFI files, copies `vmlinuz-linux-jarvisos` and its initramfs from `build/kernel-files/`, and updates the syslinux/GRUB bootloader entries. The EFI image is always deleted and recreated to prevent silent ENOSPC truncation.
+
+---
+
+## Known Issues & Status
+
+| Area | Status | Notes |
+|------|--------|-------|
+| Kernel build (`linux-jarvisos`) | Working | Requires Arch host; ccache strongly recommended |
+| `/dev/jarvis` driver | Working | Confirmed active when booted into linux-jarvisos |
+| sysmon sysfs (`/sys/class/misc/jarvis/sysmon/`) | Working | Readable with `cat` |
+| Policy sysfs (`/sys/class/misc/jarvis/policy/`) | Working | Shows all loaded rules |
+| Standalone JARVIS agent (`test-jarvis-ollama.sh`) | Working | Voice + text, Ollama, full policy enforcement |
+| ISO build pipeline | Working | Full build completes without errors |
+| Live boot (BIOS) | Working | Boots to KDE Plasma desktop |
+| Live boot (UEFI) | Working | efiboot.img dynamically sized; EFI stub enforced |
+| WiFi on live boot | Working | NetworkManager + wpa_supplicant backend |
+| Audio on live boot | Working | PipeWire with rtkit-daemon, per-user service symlinks |
+| Touchpad on live boot | Working | libinput + psmouse/i2c_hid modules |
+| Calamares installer | In progress | Installs but post-install configuration needs work |
+| JARVIS daemon on installed system | In progress | Service boots; model selection needs tuning |
+
+---
+
+## Troubleshooting
+
+### Kernel build
+
+**`makepkg: command not found`**
 ```bash
-# Interactive CLI modes
-jarvis text          # Text-only interaction
-jarvis voice         # Voice interaction (one-time)
-jarvis                # Default voice activation mode
-
-# Direct queries
-jarvis ask "What files are in my home directory?"
-jarvis ask "Create a new file called notes.txt"
-
-# Model management
-jarvis model -l      # List available models
-jarvis model -n 'model-name'  # Set active model
-
-# System information
-jarvis --help        # Show help
-jarvis --version     # Show version
+# You must be on an Arch-based system
+sudo pacman -S base-devel
 ```
 
-### **JARVIS Service Management**
-
+**`CONFIG_JARVIS=m missing from final .config`**
 ```bash
-# Start/stop service
-sudo systemctl start jarvis
-sudo systemctl stop jarvis
-
-# Enable/disable on boot
-sudo systemctl enable jarvis
-sudo systemctl disable jarvis
-
-# View logs
-sudo journalctl -u jarvis -f
-sudo tail -f /var/log/jarvis/jarvis.log
+# Remove stale .config so PKGBUILD rebuilds from /proc/config.gz
+rm linux/.config
+bash scripts/03b-build-kernel.sh --host-install
 ```
 
-## 🔧 **Architecture Overview**
-
-### **How JARVIS Works**
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     JARVIS Architecture                      │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│  🎤 Voice Input → Speech-to-Text (Vosk)                    │
-│         ↓                                                    │
-│  🧠 LLM Processing (Ollama)                                 │
-│         ↓                                                    │
-│  🔧 Tool Discovery (SuperMCP)                               │
-│         ↓                                                    │
-│  ⚙️  Command Execution                                       │
-│         ↓                                                    │
-│  🔊 Voice Output ← Text-to-Speech (Piper)                  │
-│                                                              │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### **System Components**
-
-1. **Base System**: Arch Linux with KDE Plasma Wayland
-2. **AI Engine**: Ollama for local LLM inference
-3. **Voice Input**: Vosk for speech recognition
-4. **Voice Output**: Piper for text-to-speech
-5. **Tool System**: SuperMCP for dynamic capability discovery
-6. **System Service**: systemd-managed JARVIS daemon
-7. **Installer**: Calamares for easy installation
-
-### **File Locations**
-
-```
-/usr/lib/jarvis/              # JARVIS code
-/var/lib/jarvis/              # JARVIS data
-  ├── venv/                   # Python virtual environment
-  └── models/                 # AI models (Piper, Vosk)
-/etc/jarvis/                  # Configuration files
-/var/log/jarvis/              # Log files
-/usr/bin/jarvis               # CLI wrapper
-/usr/bin/jarvis-daemon        # System daemon
-```
-
-## 🛠️ **Build System Details**
-
-### **Makefile Targets**
-
-| Target | Description | Duration |
-|--------|-------------|----------|
-| `make help` | Show available targets | Instant |
-| `make status` | Check build step status | Instant |
-| `make step1` | Extract base ISO | 1-2 min |
-| `make step2` | Extract SquashFS | 2-3 min |
-| `make step3` | Install KDE Plasma | 15-25 min |
-| `make step4` | Install JARVIS | 10-15 min |
-| `make step5` | Install Calamares | 5-10 min |
-| `make step6` | Rebuild SquashFS | 5-10 min |
-| `make step7` | Create final ISO | 2-5 min |
-| `make all` | Run all steps | 40-70 min |
-| `make clean` | Remove build artifacts | 1 min |
-
-### **What Each Script Does**
-
-#### **01-extract-iso.sh**
-- Mounts or extracts the base Arch Linux ISO
-- Creates working directory structure
-- Preserves ISO metadata for later rebuilding
-
-#### **02-unsquash-fs.sh**
-- Extracts the SquashFS compressed rootfs
-- Creates `build/iso-rootfs/` for modifications
-- Handles both legacy and modern Arch ISO structures
-
-#### **03-bake-wayland.sh**
-- Installs KDE Plasma desktop environment
-- Configures Wayland display server
-- Installs audio system (PipeWire)
-- Sets up NetworkManager
-- Configures SDDM display manager
-- Installs essential GUI applications
-
-#### **04-bake-jarvis.sh**
-- Copies Project-JARVIS code to `/usr/lib/jarvis/`
-- Creates Python virtual environment
-- Installs Python dependencies
-- Installs Ollama
-- Creates jarvis user and directories
-- Sets up systemd service
-- Installs CLI wrapper scripts
-
-#### **05-bake-calamares.sh**
-- Installs Calamares installer framework
-- Configures installation steps
-- Sets up JARVIS branding
-- Configures post-install scripts
-
-#### **06-squash-fs.sh**
-- Compresses modified rootfs back to SquashFS
-- Optimizes compression for size
-- Updates filesystem metadata
-
-#### **07-rebuild-iso.sh**
-- Rebuilds bootable ISO from modified files
-- Updates bootloader configuration
-- Signs ISO with checksums
-- Creates timestamped final ISO file
-
-## 🔍 **Troubleshooting**
-
-### **Common Build Issues**
-
-**"PROJECT_ROOT not set in build.config"**
+**Kernel submodule is empty**
 ```bash
-# Edit scripts/build.config and set PROJECT_ROOT
-nano scripts/build.config
-# Set: PROJECT_ROOT="/absolute/path/to/jarvisos"
+git submodule update --init --recursive linux
 ```
 
-**"ISO file not found"**
+### ISO build
+
+**`ISO file not found`**
 ```bash
-# Verify ISO exists in build-deps/
-ls -lh build-deps/
-# Download if missing:
-cd build-deps && wget https://mirror.rackspace.com/archlinux/iso/latest/archlinux-x86_64.iso
+ls build-deps/
+# Ensure cachyos-desktop-linux-260308.iso is present, or update ISO_FILE in scripts/build.config
 ```
 
-**"arch-chroot: command not found"**
+**`arch-chroot: command not found`**
 ```bash
-# Install arch-install-scripts
-sudo dnf install arch-install-scripts  # Fedora
-sudo apt install arch-install-scripts  # Ubuntu
+sudo pacman -S arch-install-scripts
 ```
 
-**"No space left on device"**
+**`No space left on device` during squashfs**
 ```bash
-# Clean build artifacts
-cd scripts && make clean
-# Check disk space
 df -h
+make clean   # Clears build/ to reclaim space
 ```
 
-**"Failed to mount/unmount rootfs"**
+**UEFI boots to black screen / "Unsupported"**
+The `07-rebuild-iso.sh` script dynamically sizes efiboot.img and enforces `CONFIG_EFI_STUB=y` in the kernel config. If you are hitting this on an old build, rebuild from step 7: `make step7`.
+
+### JARVIS agent
+
+**`Ollama not reachable`**
 ```bash
-# Forcefully unmount
-sudo umount -l build/iso-rootfs
-# Kill processes using the directory
-sudo lsof +D build/iso-rootfs
+systemctl start ollama
+# or for user session:
+ollama serve &
 ```
 
-### **Runtime Issues**
+**No voice input (`vosk/pyaudio` missing)**
+The agent falls back to text-only mode automatically. Install `portaudio` and rerun the launcher to enable voice.
 
-**"JARVIS won't start"**
+**Audio in live boot is silent**
 ```bash
-# Check service status
-systemctl status jarvis
-
-# Check for missing models
-ls -la /var/lib/jarvis/models/
-
-# View detailed logs
-journalctl -u jarvis -e --no-pager
-
-# Test manual start
-sudo -u jarvis /usr/bin/jarvis-daemon
+systemctl --user status pipewire
+systemctl --user start pipewire pipewire-pulse wireplumber
 ```
-
-**"Ollama not responding"**
-```bash
-# Check Ollama service
-systemctl status ollama
-
-# Restart Ollama
-systemctl restart ollama
-
-# Pull a model if none exist
-ollama pull llama3.2
-```
-
-**"No audio input/output"**
-```bash
-# Check audio devices
-arecord -l  # Input devices
-aplay -l    # Output devices
-
-# Test PipeWire
-pactl info
-
-# Restart PipeWire
-systemctl --user restart pipewire
-```
-
-## 📚 **Advanced Topics**
-
-### **Customizing the Build**
-
-#### **Adding Packages**
-
-Edit `scripts/03-bake-wayland.sh` or `04-bake-jarvis.sh`:
-```bash
-# Add packages to the installation list
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm \
-    your-package-1 \
-    your-package-2
-```
-
-#### **Changing Desktop Environment**
-
-Replace KDE Plasma in `03-bake-wayland.sh`:
-```bash
-# For GNOME:
-pacman -S --noconfirm gnome gnome-extra gdm
-
-# For XFCE:
-pacman -S --noconfirm xfce4 xfce4-goodies lightdm lightdm-gtk-greeter
-```
-
-#### **Modifying JARVIS Configuration**
-
-Edit `Project-JARVIS/jarvis/config.env.template` before building, or modify `/etc/jarvis/jarvis.conf.template` in the built ISO.
-
-### **Development Workflow**
-
-```bash
-# 1. Make changes to Project-JARVIS
-cd Project-JARVIS
-git pull origin main
-# Make your changes...
-
-# 2. Rebuild only JARVIS (skip earlier steps)
-cd ../scripts
-make step4
-
-# 3. Rebuild SquashFS and ISO
-make step6 step7
-
-# 4. Test in QEMU
-./booter.sh
-```
-
-### **Creating Custom Variants**
-
-You can create multiple build configurations:
-
-```bash
-# Create variant configs
-cp build.config build.config.minimal
-cp build.config build.config.development
-
-# Edit each for different purposes
-# Then build with:
-source build.config.minimal && make all
-```
-
-## 🤝 **Contributing**
-
-We welcome contributions! Here's how:
-
-1. **Fork the repository**
-2. **Create a feature branch**
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-3. **Make your changes**
-   - Follow existing code style
-   - Test thoroughly with `make all`
-   - Update documentation
-4. **Commit your changes**
-   ```bash
-   git commit -m "Add: Description of your changes"
-   ```
-5. **Push and create Pull Request**
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-
-### **Areas for Contribution**
-
-- 🎨 UI/UX improvements for KDE theme
-- 🔧 Additional MCP servers for SuperMCP
-- 📦 Package optimizations
-- 🌍 Internationalization support
-- 📖 Documentation improvements
-- 🐛 Bug fixes and testing
-
-## 📄 **License**
-
-This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
-
-## 🎓 **Learning Resources**
-
-### **Arch Linux & Linux System Building**
-- [Arch Linux Wiki](https://wiki.archlinux.org/)
-- [ArchISO Documentation](https://wiki.archlinux.org/title/Archiso)
-- [Linux From Scratch](https://www.linuxfromscratch.org/)
-
-### **JARVIS Development**
-- [Project-JARVIS Documentation](Project-JARVIS/README.md)
-- [SuperMCP Documentation](https://github.com/YourUsername/SuperMCP)
-- [Ollama Documentation](https://ollama.com/docs)
-
-### **Voice & AI**
-- [Vosk Speech Recognition](https://alphacephei.com/vosk/)
-- [Piper TTS](https://github.com/rhasspy/piper)
-- [LLM Prompting Guide](https://www.promptingguide.ai/)
-
-## 🎉 **What's Next?**
-
-Once you have JARVIS OS running:
-
-1. **🎤 Try Voice Commands**
-   - "JARVIS, what's the weather like?"
-   - "JARVIS, list my files"
-   - "JARVIS, install Firefox"
-
-2. **🔧 Customize JARVIS**
-   - Add custom MCP servers for specialized tasks
-   - Train custom wake words
-   - Configure personality and response style
-
-3. **📦 Build Applications**
-   - Create AI-native applications
-   - Integrate with JARVIS capabilities
-   - Share with the community
-
-4. **🌍 Contribute Back**
-   - Report bugs and issues
-   - Submit improvements
-   - Help others in the community
 
 ---
 
-## 📞 **Support & Community**
+## File Locations (installed system)
 
-- **Issues**: [GitHub Issues](https://github.com/YourUsername/jarvisos/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/YourUsername/jarvisos/discussions)
-- **Documentation**: [Project Wiki](https://github.com/YourUsername/jarvisos/wiki)
+```
+/dev/jarvis                             # JARVIS kernel character device
+/sys/class/misc/jarvis/sysmon/          # Live hardware metrics
+/sys/class/misc/jarvis/policy/          # Active AI security policy table
+/usr/lib/modules/<kver>/kernel/drivers/jarvis/jarvis.ko.zst
+/usr/lib/jarvis/                        # JARVIS daemon code
+/var/lib/jarvis/                        # Runtime data (venv, models)
+/etc/jarvis/                            # Configuration
+/var/log/jarvis/ or /tmp/jarvis.log     # Audit log
+/usr/bin/jarvis                         # CLI wrapper
+/usr/bin/jarvis-daemon                  # Daemon binary
+```
 
 ---
 
-**Welcome to the future of computing! 🤖✨**
+## Contributing
 
-*JARVIS OS - Where AI meets the operating system*
+1. Fork the repo and create a feature branch
+2. Test your changes with `make all` and boot the ISO in QEMU
+3. For kernel changes: rebuild with `bash scripts/03b-build-kernel.sh --host-install` and verify `uname -r` and `/dev/jarvis`
+4. Submit a PR with a description of what changed and how you tested it
+
+Areas that need work:
+- Calamares post-install script (sets up linux-jarvisos as the installed bootloader entry)
+- JARVIS daemon auto-startup and model selection on first boot
+- Kernel → daemon query path (the `jarvis_post_query` / `JARVIS_IOC_RESPOND` round-trip)
+- Voice TTS output (Piper integration)
+
+---
+
+## License
+
+GNU General Public License v3.0 — see [LICENSE](LICENSE).
+
+The `linux/` submodule is GPL-2.0 (Linux kernel).
+
+---
+
+*JARVIS OS — where the AI lives in the kernel, not on top of it.*
