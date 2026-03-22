@@ -133,13 +133,47 @@ echo -e "${BLUE}This can take 5-15 minutes depending on rootfs size...${NC}"
 ROOTFS_SIZE=$(sudo du -sh "${SQUASHFS_ROOTFS}" 2>/dev/null | cut -f1)
 echo -e "${BLUE}Rootfs size: ${ROOTFS_SIZE}${NC}"
 
+# ============================================================================
+# ISO SIZE REDUCTION: strip unneeded data before compression
+# ============================================================================
+echo -e "${BLUE}Stripping non-essential locale data (keeping en / en_US / locale.alias)...${NC}"
+sudo find "${SQUASHFS_ROOTFS}/usr/share/locale" -mindepth 1 -maxdepth 1 \
+    ! -name 'en' ! -name 'en_US' ! -name 'en_US.*' ! -name 'locale.alias' \
+    -exec rm -rf {} + 2>/dev/null || true
+
+echo -e "${BLUE}Removing development headers (not needed on live ISO)...${NC}"
+sudo rm -rf "${SQUASHFS_ROOTFS}/usr/include" 2>/dev/null || true
+
+echo -e "${BLUE}Removing package documentation...${NC}"
+sudo rm -rf "${SQUASHFS_ROOTFS}/usr/share/doc" 2>/dev/null || true
+
+echo -e "${BLUE}Removing static libraries and cmake/pkgconfig files...${NC}"
+sudo find "${SQUASHFS_ROOTFS}/usr/lib" \
+    \( -name '*.a' -o -name '*.la' \) -delete 2>/dev/null || true
+sudo rm -rf "${SQUASHFS_ROOTFS}/usr/lib/cmake" 2>/dev/null || true
+sudo rm -rf "${SQUASHFS_ROOTFS}/usr/lib/pkgconfig" 2>/dev/null || true
+sudo rm -rf "${SQUASHFS_ROOTFS}/usr/share/pkgconfig" 2>/dev/null || true
+
+echo -e "${BLUE}Removing unused KDE wallpapers (keeping only JarvisOS defaults)...${NC}"
+sudo find "${SQUASHFS_ROOTFS}/usr/share/wallpapers" -mindepth 1 -maxdepth 1 \
+    ! -name 'JarvisOS*' ! -name 'Next' \
+    -exec rm -rf {} + 2>/dev/null || true
+
+# NOTE: /usr/lib/girepository-1.0 (GI typelibs) are RUNTIME data — nm-applet and
+# other GI-dependent tools load them at startup. Do NOT strip these.
+
+echo -e "${BLUE}Size after stripping:${NC}"
+sudo du -sh "${SQUASHFS_ROOTFS}" 2>/dev/null | cut -f1
+
 # Build SquashFS with xz compression
 # CRITICAL: Do NOT pipe through tee — with pipefail off the tee mask mksquashfs failures.
 # Instead, redirect stderr+stdout to the log and stream it with tail -f in the background.
 SQUASHFS_LOG="${BUILD_DIR}/squashfs-build.log"
+SQUASHFS_JOBS="${JOBS:-$(nproc)}"
 sudo mksquashfs "${SQUASHFS_ROOTFS}" "${NEW_SQUASHFS}" \
     -comp xz \
     -b 1M \
+    -processors "${SQUASHFS_JOBS}" \
     -noappend \
     -e boot/grub/grubenv \
     -e proc \

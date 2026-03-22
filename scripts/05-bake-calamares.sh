@@ -88,11 +88,12 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${BLUE}Installing bootloader packages (grub + efibootmgr)...${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed grub efibootmgr || {
-    echo -e "${RED}Error: Failed to install grub and efibootmgr${NC}" >&2
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
+    grub efibootmgr os-prober dosfstools || {
+    echo -e "${RED}Error: Failed to install bootloader packages${NC}" >&2
     exit 1
 }
-echo -e "${GREEN}✓ grub and efibootmgr installed${NC}"
+echo -e "${GREEN}✓ grub, efibootmgr, os-prober, dosfstools installed${NC}"
 
 # Step 3b: Add chaotic-aur repository
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -408,6 +409,12 @@ fi
 
 cd "${CALAMARES_CONFIG_DIR}"
 
+# Clean any stale packages from previous builds before rebuilding.
+# Without this, find | head -1 below can pick an old package that predates
+# files added later (e.g. install-jarvisos.sh was absent in early builds).
+echo -e "${BLUE}Cleaning stale calamares-config packages...${NC}"
+rm -f "${CALAMARES_CONFIG_DIR}"/*.pkg.tar.zst "${CALAMARES_CONFIG_DIR}"/*.pkg.tar.gz 2>/dev/null || true
+
 # Build the package
 # Use --nodeps to skip dependency checking (calamares is in chroot, not on host)
 echo -e "${BLUE}Running makepkg (skipping dependency checks)...${NC}"
@@ -417,8 +424,10 @@ makepkg -f --noconfirm --nodeps || {
     exit 1
 }
 
-# Find the built package (could be .tar.zst or .tar.gz depending on makepkg config)
-PKGFILE=$(find "${CALAMARES_CONFIG_DIR}" -maxdepth 1 \( -name 'calamares-config-*.pkg.tar.zst' -o -name 'calamares-config-*.pkg.tar.gz' \) -type f | head -1) || true
+# Find the built package — sort by mtime (newest first) so we always get the
+# package just produced by makepkg, never a stale leftover from a prior run.
+PKGFILE=$(ls -t "${CALAMARES_CONFIG_DIR}"/calamares-config-*.pkg.tar.zst \
+              "${CALAMARES_CONFIG_DIR}"/calamares-config-*.pkg.tar.gz 2>/dev/null | head -1) || true
 
 if [ -z "${PKGFILE}" ]; then
     echo -e "${RED}Error: Built package file not found${NC}" >&2
@@ -453,12 +462,21 @@ if ! sudo test -f "${SQUASHFS_ROOTFS}${INSTALL_PATH}"; then
 fi
 
 echo -e "${BLUE}Installing package in chroot...${NC}"
+# Remove cachyos-calamares first — it owns the same config files we're about to install.
+# --noconfirm --nodeps so it doesn't drag in reverse-deps or prompt.
+sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
+    if pacman -Q cachyos-calamares >/dev/null 2>&1; then
+        echo 'Removing cachyos-calamares (conflicts with our calamares-config)...'
+        pacman -R --noconfirm --nodeps cachyos-calamares 2>/dev/null || true
+    fi
+" || true
+
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     echo 'Checking if package file exists in chroot...'
     ls -lh ${INSTALL_PATH} || echo 'Package file not found!'
     echo ''
     echo 'Installing package...'
-    pacman -U --noconfirm ${INSTALL_PATH}
+    pacman -U --noconfirm --overwrite '*' ${INSTALL_PATH}
 " || {
     echo -e "${RED}Error: Failed to install calamares-config package${NC}" >&2
     echo -e "${YELLOW}Debugging: Checking if file exists in rootfs...${NC}"
@@ -476,6 +494,53 @@ if [ ! -f "${SQUASHFS_ROOTFS}/etc/calamares/settings.conf" ]; then
 fi
 
 echo -e "${GREEN}✓ calamares-config package installed${NC}"
+
+# Step 6b: Create jarvis-setup.service (first-boot Ollama model pull / JARVIS init)
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}Creating jarvis-setup.service (first-boot JARVIS initialisation)...${NC}"
+sudo bash -c "cat > '${SQUASHFS_ROOTFS}/usr/lib/systemd/system/jarvis-setup.service'" <<'SVCEOF'
+[Unit]
+Description=JARVIS OS First-Boot Setup (Ollama model pull)
+After=network-online.target ollama.service
+Wants=network-online.target ollama.service
+ConditionPathExists=!/var/lib/jarvis/.setup-complete
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/var/lib/jarvis
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/local/bin/calamares-pull-model.sh
+ExecStartPost=/bin/touch /var/lib/jarvis/.setup-complete
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+echo -e "${GREEN}✓ jarvis-setup.service created${NC}"
+
+# Step 6c: Add backup installer shortcut to liveuser Desktop
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}Adding backup installer shortcut to liveuser Desktop...${NC}"
+sudo bash -c "cat > '${SQUASHFS_ROOTFS}/home/liveuser/Desktop/install-jarvisos-cli.desktop'" <<'DESKEOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Install JARVIS OS (CLI)
+GenericName=Backup Installer
+Comment=Text-based installer — use if Calamares fails
+Exec=konsole -e sudo /usr/local/bin/install-jarvisos.sh
+Icon=system-software-install
+Terminal=false
+StartupNotify=true
+Categories=System;
+Keywords=install;installer;jarvis;
+DESKEOF
+sudo chmod 644 "${SQUASHFS_ROOTFS}/home/liveuser/Desktop/install-jarvisos-cli.desktop"
+sudo chown root:root "${SQUASHFS_ROOTFS}/home/liveuser/Desktop/install-jarvisos-cli.desktop" 2>/dev/null || true
+echo -e "${GREEN}✓ Backup installer shortcut added to liveuser Desktop${NC}"
 
 # Step 7: Update KDE application database
 echo -e "${BLUE}Updating KDE application database...${NC}"
@@ -507,4 +572,8 @@ echo -e "${BLUE}  ✓ Main config: /etc/calamares/settings.conf${NC}"
 echo -e "${BLUE}  ✓ Modules: /etc/calamares/modules/${NC}"
 echo -e "${BLUE}  ✓ Branding: /etc/calamares/branding/jarvisos/${NC}"
 echo -e "${BLUE}  ✓ Desktop launcher: ~/Desktop/calamares.desktop${NC}"
+echo -e "${BLUE}  ✓ Backup installer: /usr/local/bin/install-jarvisos.sh${NC}"
+echo -e "${BLUE}  ✓ Backup launcher:  ~/Desktop/install-jarvisos-cli.desktop${NC}"
+echo -e "${BLUE}  ✓ First-boot setup: jarvis-setup.service${NC}"
+echo -e "${BLUE}  ✓ Welcome script:   /usr/local/bin/jarvis-welcome.sh${NC}"
 

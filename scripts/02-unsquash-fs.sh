@@ -59,6 +59,17 @@ if ! command -v unsquashfs &> /dev/null; then
     exit 1
 fi
 
+# ── Tear down any leftover mounts from a previous interrupted run ─────────────
+# arch-chroot (used in steps 3-5) bind-mounts proc/sys/dev/run into the rootfs.
+# If the previous run was interrupted those mounts are still active.  rm -rf on
+# a live mountpoint silently fails and unsquashfs then writes device files
+# THROUGH the bind-mount onto the host's real /dev, corrupting /dev/null etc.
+echo -e "${BLUE}Unmounting any stale mounts in existing rootfs...${NC}"
+for _mp in dev/pts dev/shm dev proc sys run tmp; do
+    sudo umount -l "${SQUASHFS_ROOTFS}/${_mp}" 2>/dev/null || true
+done
+sudo umount -l "${SQUASHFS_ROOTFS}" 2>/dev/null || true
+
 # Clean up any existing rootfs (may need sudo for root-owned files)
 echo -e "${BLUE}Cleaning up any existing rootfs...${NC}"
 sudo rm -rf "${SQUASHFS_ROOTFS}" 2>/dev/null || true

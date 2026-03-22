@@ -174,56 +174,11 @@ OLLAMAEOF
 # It will be started via autostart on live boot, and can be enabled after installation
 echo -e "${BLUE}Ollama installed - service will autostart via XDG autostart on live boot${NC}"
 
-# Step 4b: Pre-pull Ollama model into squashfs
-# Baking the model in makes the live environment fully functional without internet
-# and is the main reason the ISO should be ~8 GB rather than ~1.5 GB.
-# Models are stored at /usr/share/ollama/.ollama/models — the HOME used by
-# ollama.service (Environment="HOME=/usr/share/ollama") — so the service finds
-# them on first boot without downloading anything.
-BAKE_MODEL="${OLLAMA_BAKE_MODEL:-qwen3:4b}"
-echo -e "${BLUE}Pre-pulling Ollama model '${BAKE_MODEL}' into rootfs...${NC}"
-echo -e "${YELLOW}NOTE: qwen3:4b is ~2.5 GB. Set OLLAMA_BAKE_MODEL=<name> to override.${NC}"
-
-sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
-    set -e
-
-    # Store models where the ollama.service expects them
-    export OLLAMA_MODELS=/usr/share/ollama/.ollama/models
-    export HOME=/usr/share/ollama
-    mkdir -p \"\${OLLAMA_MODELS}\"
-
-    # Start ollama serve in the background
-    echo '  -> Starting Ollama server for model pre-pull...'
-    /usr/local/bin/ollama serve &>/tmp/ollama-pull.log &
-    OLLAMA_PID=\$!
-
-    # Wait up to 60 s for the API to become ready
-    for i in \$(seq 1 30); do
-        if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-            echo '  -> Ollama ready.'
-            break
-        fi
-        sleep 2
-    done
-
-    if ! curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-        echo 'ERROR: Ollama did not start in time. Build log:' >&2
-        cat /tmp/ollama-pull.log >&2
-        kill \$OLLAMA_PID 2>/dev/null || true
-        exit 1
-    fi
-
-    echo \"  -> Pulling model: ${BAKE_MODEL} (this takes a while on first build)...\"
-    /usr/local/bin/ollama pull '${BAKE_MODEL}'
-
-    kill \$OLLAMA_PID 2>/dev/null || true
-    wait \$OLLAMA_PID 2>/dev/null || true
-
-    # Fix ownership so ollama.service (User=ollama) can read the models
-    chown -R ollama:ollama /usr/share/ollama 2>/dev/null || true
-    echo '  -> Model pre-pull complete.'
-"
-echo -e "${GREEN}✓ Ollama model '${BAKE_MODEL}' baked into rootfs${NC}"
+# Step 4b: Ollama model — NOT pre-pulled into the ISO
+# The model is downloaded on first boot of the installed system by
+# jarvis-setup.service (see Step 15 below).  Skipping the pre-pull keeps
+# the ISO under 4 GB; users need internet access on first launch.
+echo -e "${BLUE}Skipping Ollama model pre-pull — model downloads on first boot via jarvis-setup.service${NC}"
 
 # Step 5: Create jarvis user and group
 echo -e "${BLUE}Creating jarvis user and group...${NC}"
