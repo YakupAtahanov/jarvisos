@@ -263,28 +263,15 @@ def _setup_askpass() -> str:
     """Create a tiny shell script that pops up a KDE password dialog.
 
     Preference order:
-      1. ksshaskpass  — native KDE askpass, integrates with KWallet
-      2. kdialog      — always present on KDE Plasma, works on Wayland
-      3. nothing      — fall back to terminal sudo (user types in the terminal)
+      1. kdialog wrapper — always present on KDE Plasma, works on Wayland,
+                           avoids ksshaskpass "Unable to parse phrase" errors
+      2. ksshaskpass     — fallback if kdialog is absent
+      3. nothing         — fall back to terminal sudo
     """
     global _ASKPASS_PATH
 
-    # If ksshaskpass is installed, use it directly — no wrapper needed
-    for candidate in ("ksshaskpass", "/usr/lib/ssh/ksshaskpass",
-                      "/usr/lib/ksshaskpass"):
-        # Path() is absolute — check it directly
-        if Path(candidate).exists():
-            _ASKPASS_PATH = candidate
-            ok(f"sudo askpass: {candidate}")
-            return _ASKPASS_PATH
-        # bare name — resolve to full path via PATH; SUDO_ASKPASS must be absolute
-        full = _which(candidate)
-        if full:
-            _ASKPASS_PATH = full
-            ok(f"sudo askpass: {full}")
-            return _ASKPASS_PATH
-
-    # Otherwise write a one-liner that calls kdialog
+    # Prefer a kdialog wrapper — it ignores the sudo phrase argument entirely
+    # and pops up a clean dialog, avoiding ksshaskpass parse errors.
     if _which("kdialog"):
         try:
             fd, path = tempfile.mkstemp(suffix=".sh", prefix="jarvis-askpass-")
@@ -299,10 +286,23 @@ def _setup_askpass() -> str:
             os.chmod(path, stat.S_IRWXU)
             atexit.register(_remove_askpass, path)
             _ASKPASS_PATH = path
-            ok(f"sudo askpass: kdialog wrapper → {path}")
+            ok(f"sudo askpass: kdialog → {path}")
             return _ASKPASS_PATH
         except OSError as exc:
             warn(f"Could not create askpass script: {exc}")
+
+    # Fallback: ksshaskpass (may print "Unable to parse phrase" but still works)
+    for candidate in ("ksshaskpass", "/usr/lib/ssh/ksshaskpass",
+                      "/usr/lib/ksshaskpass"):
+        if Path(candidate).exists():
+            _ASKPASS_PATH = candidate
+            ok(f"sudo askpass: {candidate}")
+            return _ASKPASS_PATH
+        full = _which(candidate)
+        if full:
+            _ASKPASS_PATH = full
+            ok(f"sudo askpass: {full}")
+            return _ASKPASS_PATH
 
     warn("No KDE askpass found — sudo will prompt in terminal")
     return ""
@@ -318,11 +318,22 @@ def _which(cmd: str) -> str:
     return shutil.which(cmd) or ""
 
 def _inject_askpass(cmd: str) -> tuple[str, dict[str, str]]:
-    """Rewrite 'sudo …' → 'sudo -A …' and return the extra env needed."""
+    """Rewrite 'sudo …' → 'sudo -A …' and return the extra env needed.
+
+    Also injects --noconfirm into pacman install/upgrade/remove commands so
+    interactive provider-selection prompts don't block autonomous execution.
+    """
     env: dict[str, str] = {}
     if "sudo " in cmd and _ASKPASS_PATH:
         cmd = cmd.replace("sudo ", "sudo -A ", 1)
         env["SUDO_ASKPASS"] = _ASKPASS_PATH
+
+    # Prevent pacman from blocking on "choose a provider" prompts.
+    # Only add --noconfirm to -S / -R / -U operations, not -Q (query).
+    import re
+    if re.search(r"\bpacman\b.*\s-[A-Za-z]*[SRU]", cmd) and "--noconfirm" not in cmd:
+        cmd = cmd.rstrip() + " --noconfirm"
+
     return cmd, env
 
 # ── Policy helpers ────────────────────────────────────────────────────────────
