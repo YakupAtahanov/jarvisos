@@ -59,6 +59,7 @@ step "System Dependencies"
 MISSING_PKGS=()
 pacman -Qi portaudio    &>/dev/null || MISSING_PKGS+=(portaudio)
 pacman -Qi python-pip   &>/dev/null || MISSING_PKGS+=(python-pip)
+pacman -Qi unzip        &>/dev/null || MISSING_PKGS+=(unzip)
 
 if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
     info "Installing: ${MISSING_PKGS[*]}"
@@ -164,6 +165,7 @@ if [[ -z "$AVAILABLE_MODELS" ]]; then
     echo ""
     read -rp "  Pull ${SUGGEST} now? [Y/n] " pull_choice
     if [[ "${pull_choice:-Y}" =~ ^[Yy]$ ]]; then
+        command -v ollama &>/dev/null || die "ollama CLI not found — install from https://ollama.com"
         info "Pulling ${SUGGEST} (this may take a few minutes)..."
         ollama pull "$SUGGEST" || die "Pull failed"
         AVAILABLE_MODELS="$SUGGEST"
