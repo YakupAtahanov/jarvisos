@@ -1,5 +1,13 @@
 # JARVIS OS — AI-Native Linux Distribution
 
+**Website**: [www.jarvisoslinux.org](https://www.jarvisoslinux.org)
+
+**Contact**:
+- Toufic Majdalani — [toufic@touficmajdalani.com](mailto:toufic@touficmajdalani.com)
+- Yakup Atahanov — [yakup.atahanov@wsu.edu](mailto:yakup.atahanov@wsu.edu)
+
+---
+
 **The world's first operating system with a custom AI-integrated kernel.**
 
 JARVIS OS is a custom Linux distribution built on a CachyOS/Arch base where an AI assistant handles system administration, file management, and hardware control through natural language — voice or text. The kernel itself speaks to the AI through a dedicated character device (`/dev/jarvis`), making the AI a first-class OS citizen rather than a userspace afterthought.
