@@ -28,6 +28,10 @@ USER_PASS=""
 ROOT_PASS=""
 IS_EFI=false
 MOUNT_ROOT="/mnt/jarvis-install"
+PARTITION_MODE=""        # "auto" or "manual"
+declare -A PART_MOUNT=() # partition dev -> mountpoint
+declare -A PART_FS=()    # partition dev -> filesystem
+declare -A PART_FORMAT=() # partition dev -> "yes"/"no"
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 die() { clear; echo -e "${RED}FATAL: $*${NC}" >&2; exit 1; }
@@ -144,10 +148,20 @@ step_select_disk() {
 
     TARGET_DISK=$(d_menu "Select Target Disk" 16 68 "${items[@]}") || { clear; exit 0; }
     TARGET_DISK="/dev/${TARGET_DISK}"
+}
 
-    d_yesno "Confirm Disk" \
-        "ALL DATA on ${TARGET_DISK} will be permanently erased.\n\nAre you sure?" \
-        || { clear; echo "Aborted."; exit 0; }
+# ── Step 2b: Partition mode ────────────────────────────────────────────────
+step_partition_mode() {
+    PARTITION_MODE=$(d_menu "Partitioning Mode" 12 68 \
+        "auto"   "Automatic — erase disk, create standard layout" \
+        "manual" "Manual  — cfdisk editor + assign mount points") \
+        || { clear; exit 0; }
+
+    if [ "${PARTITION_MODE}" = "auto" ]; then
+        d_yesno "Confirm Disk Wipe" \
+            "ALL DATA on ${TARGET_DISK} will be permanently erased.\n\nAre you sure?" \
+            || { clear; echo "Aborted."; exit 0; }
+    fi
 }
 
 # ── Step 3: Bootloader ─────────────────────────────────────────────────────
@@ -316,12 +330,36 @@ step_user() {
 
 # ── Step 11: Summary ───────────────────────────────────────────────────────
 step_summary() {
-    local swap_label="${SWAP_SIZE} MiB"
-    [ "${SWAP_SIZE}" = "0" ]    && swap_label="None"
-    [ "${SWAP_SIZE}" = "file" ] && swap_label="4 GiB swapfile"
+    local body=""
 
-    d_yesno "Installation Summary" \
-"Disk:        ${TARGET_DISK}
+    if [ "${PARTITION_MODE}" = "manual" ]; then
+        body="Disk:        ${TARGET_DISK}
+Partitioning: Manual
+"
+        for part in $(printf '%s\n' "${!PART_MOUNT[@]}" | sort); do
+            local mnt="${PART_MOUNT[$part]}"
+            local fs="${PART_FS[$part]}"
+            local fmt="${PART_FORMAT[$part]}"
+            [ "${fmt}" = "yes" ] && fmt="format" || fmt="keep"
+            body+="  ${part} → ${mnt} (${fs}, ${fmt})
+"
+        done
+        body+="
+Bootloader:  ${BOOT_LOADER}
+Timezone:    ${TIMEZONE}
+Keyboard:    ${KEYMAP}
+Locale:      ${LOCALE}
+Hostname:    ${HOSTNAME_VAL}
+User:        ${NEW_USER}
+
+Marked partitions will be formatted. Others kept.
+Proceed with installation?"
+    else
+        local swap_label="${SWAP_SIZE} MiB"
+        [ "${SWAP_SIZE}" = "0" ]    && swap_label="None"
+        [ "${SWAP_SIZE}" = "file" ] && swap_label="4 GiB swapfile"
+        body="Disk:        ${TARGET_DISK}
+Partitioning: Automatic
 Bootloader:  ${BOOT_LOADER}
 Filesystem:  ${FS_TYPE}
 Swap:        ${swap_label}
@@ -332,7 +370,245 @@ Hostname:    ${HOSTNAME_VAL}
 User:        ${NEW_USER}
 
 ALL DATA on ${TARGET_DISK} will be erased.
-Proceed with installation?" || { clear; echo "Aborted."; exit 0; }
+Proceed with installation?"
+    fi
+
+    d_yesno "Installation Summary" "${body}" || { clear; echo "Aborted."; exit 0; }
+}
+
+# ── Manual: cfdisk editor ─────────────────────────────────────────────────
+step_cfdisk_edit() {
+    d_msgbox "Manual Partitioning" \
+"cfdisk will open for: ${TARGET_DISK}
+
+Create partitions, then select Write and Quit.
+
+UEFI recommended layout:
+  512 MiB+  EFI partition  (type: EFI System)
+  [optional] swap partition (type: Linux swap)
+  remainder  root /         (type: Linux filesystem)
+
+BIOS recommended layout:
+  1 MiB     BIOS boot      (type: BIOS boot)
+  [optional] swap partition (type: Linux swap)
+  remainder  root /         (type: Linux filesystem)
+
+Press OK to open cfdisk."
+    clear
+    cfdisk "${TARGET_DISK}" || true
+    partprobe "${TARGET_DISK}" 2>/dev/null || true
+    sleep 1
+}
+
+# ── Manual: assign mount points ────────────────────────────────────────────
+step_manual_assign() {
+    PART_MOUNT=()
+    PART_FS=()
+    PART_FORMAT=()
+
+    local parts=()
+    while IFS= read -r p; do
+        [ -n "$p" ] && parts+=("/dev/$p")
+    done < <(lsblk -lno NAME "${TARGET_DISK}" --noheadings 2>/dev/null \
+             | grep -v "^$(basename "${TARGET_DISK}")$")
+
+    if [ ${#parts[@]} -eq 0 ]; then
+        d_msgbox "No Partitions" \
+            "No partitions found on ${TARGET_DISK}.\nReturn to cfdisk to create them."
+        step_cfdisk_edit
+        step_manual_assign
+        return
+    fi
+
+    for part in "${parts[@]}"; do
+        local psize pfs
+        psize=$(lsblk -lno SIZE  "${part}" 2>/dev/null || echo "?")
+        pfs=$(  lsblk -lno FSTYPE "${part}" 2>/dev/null || echo "none")
+        [ -z "${pfs}" ] && pfs="none"
+
+        local mountpt
+        mountpt=$(dialog --clear --backtitle "JARVIS OS Installer" \
+            --title "Assign: ${part} (${psize}, current fs: ${pfs})" \
+            --menu "Select use for ${part}:" 20 70 10 \
+            "skip"   "Skip — do not use this partition" \
+            "/"      "Root filesystem (required)" \
+            "/boot"  "Boot / EFI partition" \
+            "/home"  "Home directory" \
+            "/var"   "Variable data" \
+            "/tmp"   "Temporary files" \
+            "swap"   "Swap space" \
+            "/data"  "Data partition" \
+            "custom" "Custom mount point…" \
+            3>&1 1>&2 2>&3) || { clear; exit 0; }
+
+        [ "${mountpt}" = "skip" ] && continue
+
+        if [ "${mountpt}" = "custom" ]; then
+            mountpt=$(d_input "Custom Mount Point" \
+                "Enter absolute path (e.g. /srv):" "") \
+                || { clear; exit 0; }
+            [ -z "${mountpt}" ] && continue
+            [[ "${mountpt}" != /* ]] && mountpt="/${mountpt}"
+        fi
+
+        PART_MOUNT["${part}"]="${mountpt}"
+
+        # Pick filesystem
+        if [ "${mountpt}" = "swap" ]; then
+            PART_FS["${part}"]="swap"
+            local fmt_choice
+            fmt_choice=$(d_menu "Format? — ${part}" 10 60 \
+                "yes" "Format as swap (mkswap)" \
+                "no"  "Use existing swap partition") \
+                || { clear; exit 0; }
+            PART_FORMAT["${part}"]="${fmt_choice}"
+        else
+            local fs_hint="ext4"
+            [ "${mountpt}" = "/boot" ] && $IS_EFI && fs_hint="fat32"
+
+            local chosen_fs
+            chosen_fs=$(dialog --clear --backtitle "JARVIS OS Installer" \
+                --title "Filesystem — ${part} → ${mountpt}" \
+                --menu "Format ${part} as:" 16 68 5 \
+                "ext4"  "ext4  — stable, widely supported" \
+                "btrfs" "btrfs — copy-on-write, snapshots" \
+                "xfs"   "xfs   — high performance" \
+                "fat32" "FAT32 — EFI / boot partitions" \
+                "keep"  "Keep existing — do not format" \
+                3>&1 1>&2 2>&3) || { clear; exit 0; }
+
+            PART_FS["${part}"]="${chosen_fs}"
+            [ "${chosen_fs}" = "keep" ] && PART_FORMAT["${part}"]="no" \
+                                        || PART_FORMAT["${part}"]="yes"
+        fi
+    done
+
+    validate_manual_parts || { step_manual_assign; return; }
+}
+
+# ── Manual: validate ──────────────────────────────────────────────────────
+validate_manual_parts() {
+    local has_root=false has_boot=false
+    for part in "${!PART_MOUNT[@]}"; do
+        [ "${PART_MOUNT[$part]}" = "/" ]     && has_root=true
+        [ "${PART_MOUNT[$part]}" = "/boot" ] && has_boot=true
+    done
+
+    if ! $has_root; then
+        d_msgbox "Missing Root" \
+            "No root (/) partition assigned.\nRe-assign partitions."
+        return 1
+    fi
+
+    if $IS_EFI && ! $has_boot; then
+        d_msgbox "Missing EFI Partition" \
+            "UEFI requires /boot assigned to an EFI System Partition (FAT32)."
+        return 1
+    fi
+    return 0
+}
+
+# ── Manual: swap (if no swap partition assigned) ───────────────────────────
+step_manual_swap() {
+    for part in "${!PART_MOUNT[@]}"; do
+        [ "${PART_MOUNT[$part]}" = "swap" ] && { SWAP_SIZE="0"; return 0; }
+    done
+    local choice
+    choice=$(d_menu "Swap Space" 10 68 \
+        "0"    "None" \
+        "file" "4 GiB swapfile (created after install)") \
+        || { SWAP_SIZE="0"; return 0; }
+    SWAP_SIZE="${choice}"
+}
+
+# ── Manual: format one partition ──────────────────────────────────────────
+_format_part() {
+    local dev="$1" fs="$2" label="${3:-DATA}"
+    label="${label//\//-}"; label="${label#-}"
+    case "${fs}" in
+        ext4)  mkfs.ext4  -F   -L "JARVIS-${label}" "${dev}" >/dev/null ;;
+        btrfs) mkfs.btrfs -f   -L "JARVIS-ROOT"     "${dev}" >/dev/null ;;
+        xfs)   mkfs.xfs   -f   -L "JARVIS-${label}" "${dev}" >/dev/null ;;
+        fat32) mkfs.fat   -F32 -n "JARVIS-EFI"      "${dev}" >/dev/null ;;
+        swap)  mkswap "${dev}" >/dev/null ;;
+        keep)  : ;;
+    esac
+}
+
+# ── Manual: format and mount all assigned partitions ──────────────────────
+manual_format_and_mount() {
+    mkdir -p "${MOUNT_ROOT}"
+
+    # Find root partition
+    local root_dev=""
+    for part in "${!PART_MOUNT[@]}"; do
+        [ "${PART_MOUNT[$part]}" = "/" ] && root_dev="${part}" && break
+    done
+    [ -z "${root_dev}" ] && die "No root partition assigned."
+
+    local root_fs="${PART_FS[$root_dev]}"
+    FS_TYPE="${root_fs}"
+    [ "${FS_TYPE}" = "keep" ] && FS_TYPE="ext4"
+
+    # Format + mount root
+    [ "${PART_FORMAT[$root_dev]}" = "yes" ] && _format_part "${root_dev}" "${root_fs}" "ROOT"
+
+    if [ "${root_fs}" = "btrfs" ] && [ "${PART_FORMAT[$root_dev]}" = "yes" ]; then
+        mount "${root_dev}" "${MOUNT_ROOT}"
+        btrfs subvolume create "${MOUNT_ROOT}/@"
+        btrfs subvolume create "${MOUNT_ROOT}/@home"
+        btrfs subvolume create "${MOUNT_ROOT}/@var"
+        btrfs subvolume create "${MOUNT_ROOT}/@snapshots"
+        umount "${MOUNT_ROOT}"
+        mount -o compress=zstd,noatime,subvol=@ "${root_dev}" "${MOUNT_ROOT}"
+        mkdir -p "${MOUNT_ROOT}"/{home,var,.snapshots}
+        mount -o compress=zstd,noatime,subvol=@home "${root_dev}" "${MOUNT_ROOT}/home"
+        mount -o compress=zstd,noatime,subvol=@var  "${root_dev}" "${MOUNT_ROOT}/var"
+        mount -o compress=zstd,noatime,subvol=@snapshots "${root_dev}" "${MOUNT_ROOT}/.snapshots"
+    else
+        mount "${root_dev}" "${MOUNT_ROOT}"
+    fi
+
+    # Build sorted list of non-root, non-swap mounts
+    local entries=()
+    for part in "${!PART_MOUNT[@]}"; do
+        local mnt="${PART_MOUNT[$part]}"
+        [ "${mnt}" = "/"    ] && continue
+        [ "${mnt}" = "swap" ] && continue
+        # Skip btrfs subvols already mounted
+        if [ "${root_fs}" = "btrfs" ] && [ "${PART_FORMAT[$root_dev]}" = "yes" ]; then
+            [[ "${mnt}" == "/home" || "${mnt}" == "/var" ]] && continue
+        fi
+        entries+=("${mnt}:${part}")
+    done
+
+    # Sort by mount depth (number of slashes)
+    local sorted=()
+    if [ ${#entries[@]} -gt 0 ]; then
+        IFS=$'\n' sorted=($(printf '%s\n' "${entries[@]}" \
+            | awk -F: '{n=split($1,a,"/"); print n":"$0}' \
+            | sort -n | sed 's/^[0-9]*://'))
+        unset IFS
+    fi
+
+    for entry in "${sorted[@]}"; do
+        local mnt="${entry%%:*}"
+        local dev="${entry##*:}"
+        local fs="${PART_FS[$dev]}"
+        mkdir -p "${MOUNT_ROOT}${mnt}"
+        [ "${PART_FORMAT[$dev]}" = "yes" ] && _format_part "${dev}" "${fs}" "${mnt#/}"
+        mount "${dev}" "${MOUNT_ROOT}${mnt}"
+    done
+
+    # Swap partitions
+    for part in "${!PART_MOUNT[@]}"; do
+        if [ "${PART_MOUNT[$part]}" = "swap" ]; then
+            [ "${PART_FORMAT[$part]}" = "yes" ] && mkswap "${part}" >/dev/null
+            swapon "${part}"
+        fi
+    done
+
+    ok "Partitions formatted and mounted"
 }
 
 # ── Partitioning ───────────────────────────────────────────────────────────
@@ -908,7 +1184,7 @@ Proceed?" 28 70 || { clear; echo "Aborted."; exit 0; }
     # ── KDE Plasma Wayland ───────────────────────────────────────────────
     info "Installing KDE Plasma Wayland..."
     pacman -S --noconfirm --needed \
-        plasma-desktop plasma-workspace plasma-wayland-session \
+        plasma-desktop plasma-workspace \
         kwin plasma-nm plasma-pa kscreen powerdevil bluedevil \
         kinfocenter polkit-kde-agent kdeplasma-addons plasma-systemmonitor \
         sddm sddm-kcm breeze breeze-gtk kde-gtk-config oxygen-sounds \
@@ -1434,9 +1710,19 @@ main() {
 
     step_welcome
     step_select_disk
-    step_select_bootloader
-    step_select_fs
-    step_select_swap
+    step_partition_mode
+
+    if [ "${PARTITION_MODE}" = "manual" ]; then
+        step_cfdisk_edit
+        step_manual_assign
+        step_manual_swap
+        step_select_bootloader
+    else
+        step_select_bootloader
+        step_select_fs
+        step_select_swap
+    fi
+
     step_timezone
     step_keyboard
     step_locale
@@ -1452,11 +1738,15 @@ main() {
 
     trap cleanup_mounts EXIT
 
-    info "Partitioning ${TARGET_DISK}..."
-    partition_disk
-
-    info "Formatting partitions..."
-    format_and_mount
+    if [ "${PARTITION_MODE}" = "manual" ]; then
+        info "Formatting and mounting partitions..."
+        manual_format_and_mount
+    else
+        info "Partitioning ${TARGET_DISK}..."
+        partition_disk
+        info "Formatting partitions..."
+        format_and_mount
+    fi
 
     install_system
 

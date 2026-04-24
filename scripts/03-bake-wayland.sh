@@ -150,7 +150,6 @@ echo -e "${BLUE}Installing KDE Plasma Wayland...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     plasma-desktop \
     plasma-workspace \
-    plasma-wayland-session \
     kwin \
     plasma-nm \
     plasma-pa \
@@ -186,6 +185,10 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     || echo -e "${YELLOW}Warning: Some KDE app packages failed${NC}"
 
 # Audio: PipeWire ecosystem
+# jack2 conflicts with pipewire-jack — remove it first if present (comes from base Arch ISO)
+echo -e "${BLUE}Removing jack2 if present (conflicts with pipewire-jack)...${NC}"
+sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -Rdd --noconfirm jack2 2>/dev/null || true
+
 echo -e "${BLUE}Installing PipeWire audio...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     pipewire pipewire-alsa pipewire-jack pipewire-pulse wireplumber \
