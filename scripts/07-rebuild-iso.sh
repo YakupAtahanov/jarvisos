@@ -169,8 +169,8 @@ for ucode in amd-ucode.img intel-ucode.img; do
 done
 [ ${MICROCODE_COPIED} -eq 0 ] && echo -e "${YELLOW}⚠ No microcode images found (optional)${NC}"
 
-# ── Copy linux-jarvisos kernel (for Calamares installation) ──────────────────
-echo -e "${BLUE}Copying linux-jarvisos kernel (Calamares install target)...${NC}"
+# ── Copy linux-jarvisos kernel (for TUI installer installation) ──────────────
+echo -e "${BLUE}Copying linux-jarvisos kernel (TUI installer target)...${NC}"
 
 JARVISOS_KERNEL_AVAILABLE=false
 if [ -f "${KERNEL_BACKUP_DIR}/vmlinuz-linux-jarvisos" ]; then
@@ -231,30 +231,8 @@ else
     echo -e "${YELLOW}  Run 'make step3b' to build linux-jarvisos before step 7.${NC}"
 fi
 
-# ── Copy linux-cachyos kernel (live boot fallback entry) ──────────────────────
-# Places vmlinuz-linux-cachyos alongside the primary kernel so a separate
-# boot menu entry can offer it as a fallback.  Backed up by step 3 into:
-#   build/kernel-files/vmlinuz-linux-cachyos
-#   build/kernel-files/initramfs-linux-cachyos.img
-echo -e "${BLUE}Copying linux-cachyos kernel (live fallback entry)...${NC}"
+# No CachyOS fallback kernel — using Arch Linux base ISO
 CACHYOS_FALLBACK_IN_ISO=false
-for _csrc in "${KERNEL_BACKUP_DIR}" "${ROOTFS_BOOT}"; do
-    _ctype="backup"
-    [ "${_csrc}" = "${ROOTFS_BOOT}" ] && _ctype="rootfs"
-    if copy_kernel_file_to_iso "vmlinuz-linux-cachyos" "${_csrc}" "${_ctype}" 2>/dev/null; then
-        CACHYOS_FALLBACK_IN_ISO=true
-        CACHYOS_KSIZE=$(du -h "${ISO_BOOT_DIR}/vmlinuz-linux-cachyos" | cut -f1)
-        echo -e "${GREEN}✓ vmlinuz-linux-cachyos (${CACHYOS_KSIZE}) — fallback${NC}"
-        if copy_kernel_file_to_iso "initramfs-linux-cachyos.img" "${_csrc}" "${_ctype}" 2>/dev/null; then
-            CACHYOS_ISIZE=$(du -h "${ISO_BOOT_DIR}/initramfs-linux-cachyos.img" | cut -f1)
-            echo -e "${GREEN}  ✓ initramfs-linux-cachyos.img (${CACHYOS_ISIZE})${NC}"
-        fi
-        copy_kernel_file_to_iso "initramfs-linux-cachyos-fallback.img" "${_csrc}" "${_ctype}" 2>/dev/null || true
-        break
-    fi
-done
-[ "${CACHYOS_FALLBACK_IN_ISO}" = false ] && \
-    echo -e "${YELLOW}⚠ linux-cachyos kernel not found — fallback boot entry will be skipped${NC}"
 
 # Verify kernel files are present (stock or jarvisos-overwritten)
 echo -e "${BLUE}Verifying boot kernel files...${NC}"
@@ -273,7 +251,7 @@ ls -lh "${ISO_BOOT_DIR}"/vmlinuz-linux* "${ISO_BOOT_DIR}"/initramfs-linux* 2>/de
 echo ""
 if [ "${JARVISOS_KERNEL_AVAILABLE}" = true ]; then
     echo -e "${GREEN}✓ linux-jarvisos is the live boot kernel${NC}"
-    echo -e "${GREEN}✓ linux-jarvisos files also available for Calamares unpackfs${NC}"
+    echo -e "${GREEN}✓ linux-jarvisos available for TUI installer${NC}"
 else
     echo -e "${GREEN}✓ Stock linux kernel copied (live boot fallback)${NC}"
 fi
@@ -1173,4 +1151,4 @@ if [ -n "${EFI_IMG}" ]; then
 fi
 echo ""
 echo -e "${GREEN}✓ ISO is ready for testing!${NC}"
-echo -e "${BLUE}You can now boot from this ISO to test KDE Plasma Wayland${NC}"
+echo -e "${BLUE}Boot the ISO — TUI installer launches automatically on TTY1${NC}"

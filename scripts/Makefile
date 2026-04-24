@@ -60,7 +60,7 @@ help:
 	@echo "  $(GREEN)make step3$(NC)  - Install KDE Plasma Wayland + all packages"
 	@echo "  $(GREEN)make step3b$(NC) - Build linux-jarvisos custom kernel (JARVIS drivers)"
 	@echo "  $(GREEN)make step4$(NC)  - Install Project-JARVIS AI assistant"
-	@echo "  $(GREEN)make step5$(NC)  - Install Calamares graphical installer"
+	@echo "  $(GREEN)make step5$(NC)  - Install TUI installer (auto-launches on TTY1)"
 	@echo "  $(GREEN)make step6$(NC)  - Rebuild SquashFS (compress rootfs)"
 	@echo "  $(GREEN)make step7$(NC)  - Rebuild bootable ISO"
 	@echo ""
@@ -77,7 +77,7 @@ help:
 	@echo ""
 	@echo "$(YELLOW)Quick start:$(NC)"
 	@echo "  1. make prereq   (install host tools)"
-	@echo "  2. Place CachyOS ISO in build-deps/ and set ISO_FILE in build.config"
+	@echo "  2. Place Arch Linux ISO in build-deps/ (build.config: ISO_FILE=archlinux-x86_64.iso)"
 	@echo "  3. make all      (build the full ISO)"
 	@echo ""
 
@@ -85,7 +85,7 @@ help:
 list:
 	@echo "$(BLUE)Available build scripts:$(NC)"
 	@for script in 00-install-prereq.sh 01-extract-iso.sh 02-unsquash-fs.sh 03-bake-wayland.sh \
-	               03b-build-kernel.sh 04-bake-jarvis.sh 05-bake-calamares.sh 06-squash-fs.sh \
+	               03b-build-kernel.sh 04-bake-jarvis.sh 05-bake-installer.sh 06-squash-fs.sh \
 	               07-rebuild-iso.sh; do \
 		if [ -f "$(SCRIPTS_DIR)/$$script" ]; then \
 			echo "  $(GREEN)✓$(NC) $$script"; \
@@ -186,14 +186,14 @@ step4:
 	@bash $(SCRIPTS_DIR)/04-bake-jarvis.sh $(BUILD_DIR)
 	@echo "$(GREEN)✓ Step 4 complete$(NC)"
 
-# Step 5: Bake Calamares
+# Step 5: Bake TUI Installer
 step5:
-	@echo "$(BLUE)Step 5: Baking Calamares...$(NC)"
-	@if [ ! -f "$(SCRIPTS_DIR)/05-bake-calamares.sh" ]; then \
-		echo "$(RED)Error: Script not found: 05-bake-calamares.sh$(NC)"; \
+	@echo "$(BLUE)Step 5: Installing TUI installer...$(NC)"
+	@if [ ! -f "$(SCRIPTS_DIR)/05-bake-installer.sh" ]; then \
+		echo "$(RED)Error: Script not found: 05-bake-installer.sh$(NC)"; \
 		exit 1; \
 	fi
-	@bash $(SCRIPTS_DIR)/05-bake-calamares.sh $(BUILD_DIR)
+	@bash $(SCRIPTS_DIR)/05-bake-installer.sh $(BUILD_DIR)
 	@echo "$(GREEN)✓ Step 5 complete$(NC)"
 
 # Step 6: Rebuild SquashFS
@@ -226,7 +226,7 @@ all: step1 step2 step3 step3b step4 step5 step6 step7
 # Run remaining steps — detects completed steps via marker files and skips them.
 # Markers: step1 → iso-extract/, step2 → iso-rootfs/, step3 → iso-rootfs/usr/share/xsessions/,
 # step3b → kernel-files/vmlinuz-linux-jarvisos, step4 → iso-rootfs/usr/bin/jarvis,
-# step5 → iso-rootfs/usr/bin/calamares, step6 → airootfs.sfs, step7 → jarvisos-*.iso
+# step5 → iso-rootfs/usr/local/bin/jarvis-install, step6 → airootfs.sfs, step7 → jarvisos-*.iso
 rest:
 	@echo "$(BLUE)Detecting completed steps...$(NC)"
 	@SKIP1=0; SKIP2=0; SKIP3=0; SKIP3B=0; SKIP4=0; SKIP5=0; SKIP6=0; SKIP7=0; \
@@ -245,7 +245,7 @@ rest:
 	if [ -f "$(BUILD_DIR)/iso-rootfs/usr/bin/jarvis" ]; then \
 		echo "  $(GREEN)✓$(NC) Step 4: already done (skipping)"; SKIP4=1; \
 	fi; \
-	if [ -f "$(BUILD_DIR)/iso-rootfs/usr/bin/calamares" ]; then \
+	if [ -f "$(BUILD_DIR)/iso-rootfs/usr/local/bin/jarvis-install" ]; then \
 		echo "  $(GREEN)✓$(NC) Step 5: already done (skipping)"; SKIP5=1; \
 	fi; \
 	if find $(ISO_EXTRACT_DIR) -type f -iname "airootfs.sfs" 2>/dev/null | grep -q .; then \
@@ -261,7 +261,7 @@ rest:
 	if [ $$SKIP3 -eq 0 ]; then echo "$(BLUE)Running step 3...$(NC)"; bash $(SCRIPTS_DIR)/03-bake-wayland.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
 	if [ $$SKIP3B -eq 0 ]; then echo "$(BLUE)Running step 3b...$(NC)"; MAKEFLAGS="-j$(JOBS)" bash $(SCRIPTS_DIR)/03b-build-kernel.sh && RAN=1 || exit 1; fi; \
 	if [ $$SKIP4 -eq 0 ]; then echo "$(BLUE)Running step 4...$(NC)"; bash $(SCRIPTS_DIR)/04-bake-jarvis.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
-	if [ $$SKIP5 -eq 0 ]; then echo "$(BLUE)Running step 5...$(NC)"; bash $(SCRIPTS_DIR)/05-bake-calamares.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
+	if [ $$SKIP5 -eq 0 ]; then echo "$(BLUE)Running step 5...$(NC)"; bash $(SCRIPTS_DIR)/05-bake-installer.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
 	if [ $$SKIP6 -eq 0 ]; then echo "$(BLUE)Running step 6...$(NC)"; JOBS=$(JOBS) bash $(SCRIPTS_DIR)/06-squash-fs.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
 	if [ $$SKIP7 -eq 0 ]; then echo "$(BLUE)Running step 7...$(NC)"; bash $(SCRIPTS_DIR)/07-rebuild-iso.sh $(BUILD_DIR) && RAN=1 || exit 1; fi; \
 	if [ $$RAN -eq 0 ]; then \
