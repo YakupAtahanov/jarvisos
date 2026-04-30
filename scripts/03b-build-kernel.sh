@@ -1,7 +1,7 @@
 #!/bin/bash
 # Step 3b: Build linux-jarvisos custom kernel packages (6.19.11)
 #
-# Builds the JARVIS-integrated Linux kernel from the linux/ submodule using
+# Builds the JARVIS-integrated Linux kernel from the linux-jarvisos/ submodule using
 # the PKGBUILD at packages/linux-jarvisos/PKGBUILD, producing two packages:
 #
 #   linux-jarvisos         — kernel image + modules
@@ -49,7 +49,7 @@ fi
 # ── Resolve paths ─────────────────────────────────────────────────────────────
 BUILD_DIR="${PROJECT_ROOT}${BUILD_DIR}"
 SQUASHFS_ROOTFS="${BUILD_DIR}/iso-rootfs"
-KERNEL_SRC="${PROJECT_ROOT}/linux"
+KERNEL_SRC="${PROJECT_ROOT}/linux-jarvisos"
 KERNEL_BACKUP_DIR="${BUILD_DIR}/kernel-files"
 PKGBUILD_DIR="${PROJECT_ROOT}/packages/linux-jarvisos"
 PKG_DEST="${BUILD_DIR}/kernel-pkg"
@@ -82,9 +82,9 @@ echo -e "${BLUE}Checking build prerequisites...${NC}"
 
 # Kernel source must be present
 if [ ! -f "${KERNEL_SRC}/Makefile" ]; then
-    echo -e "${RED}FATAL: linux/ kernel source not found at ${KERNEL_SRC}${NC}" >&2
-    echo -e "${YELLOW}Ensure the linux submodule is initialized:${NC}"
-    echo -e "${YELLOW}  git submodule update --init linux${NC}"
+    echo -e "${RED}FATAL: linux-jarvisos/ kernel source not found at ${KERNEL_SRC}${NC}" >&2
+    echo -e "${YELLOW}Ensure the linux-jarvisos submodule is initialized:${NC}"
+    echo -e "${YELLOW}  git submodule update --init linux-jarvisos${NC}"
     exit 1
 fi
 
