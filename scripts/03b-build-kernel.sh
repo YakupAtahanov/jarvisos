@@ -188,8 +188,29 @@ KERNELRELEASE=$(make -s kernelrelease LOCALVERSION="${LOCALVERSION}")
 echo -e "${BLUE}Kernel release: ${KERNELRELEASE}${NC}"
 echo ""
 
-# ── Build packages with makepkg ───────────────────────────────────────────────
+# ── Determine how to invoke makepkg (refuses to run as root) ─────────────────
+# Normal path: run `make step3b` as your regular user — makepkg runs directly.
+# Fallback:    if accidentally run as root (sudo make), delegate to $SUDO_USER.
 mkdir -p "${PKG_DEST}"
+
+if [ "$(id -u)" -eq 0 ]; then
+    # Running as root — find the real user and drop privileges for makepkg
+    BUILD_USER="${SUDO_USER:-$(logname 2>/dev/null || true)}"
+    if [ -z "${BUILD_USER}" ] || [ "${BUILD_USER}" = "root" ]; then
+        echo -e "${RED}FATAL: Running as root and cannot determine non-root user.${NC}" >&2
+        echo -e "${YELLOW}Fix: run without sudo — make step3b${NC}" >&2
+        exit 1
+    fi
+    # Ensure the non-root user can write to build dirs and kernel source
+    chown "${BUILD_USER}" "${PKG_DEST}"
+    chown -R "${BUILD_USER}" "${PKGBUILD_DIR}"
+    chown -R "${BUILD_USER}" "${KERNEL_SRC}"
+    MAKEPKG_PREFIX="sudo -u ${BUILD_USER}"
+else
+    BUILD_USER="$(id -un)"
+    MAKEPKG_PREFIX=""
+fi
+echo -e "${BLUE}makepkg will run as: ${BUILD_USER}${NC}"
 
 # Export env vars consumed by the PKGBUILD
 export KERNEL_SRC
@@ -217,7 +238,11 @@ else
     echo ""
 
     cd "${PKGBUILD_DIR}"
-    PKGDEST="${PKG_DEST}" makepkg --nodeps --nocheck --skipinteg --force
+    ${MAKEPKG_PREFIX} env \
+        KERNEL_SRC="${KERNEL_SRC}" \
+        PKGDEST="${PKG_DEST}" \
+        MAKEFLAGS="-j${NCPU}" \
+        makepkg --nodeps --nocheck --skipinteg --force
 
     echo ""
     echo -e "${GREEN}✓ Packages built successfully${NC}"
@@ -273,7 +298,8 @@ else
     echo -e "${BLUE}Reinitializing pacman keyring in chroot...${NC}"
     sudo rm -rf "${SQUASHFS_ROOTFS}/etc/pacman.d/gnupg"
     sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --init
-    sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --populate archlinux cachyos
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --populate archlinux
+    sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman-key --populate cachyos 2>/dev/null || true
     echo -e "${GREEN}✓ Keyring initialized and populated${NC}"
 
     # Install via pacman in the chroot.

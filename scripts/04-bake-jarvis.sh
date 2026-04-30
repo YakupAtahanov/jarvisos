@@ -393,7 +393,7 @@ fi
 # dispatch is a Rust binary (signal-driven task orchestrator for MCP servers).
 # Built on the host like dmcp.
 
-DISPATCH_DIR="${PROJECT_JARVIS}/dispatch"
+DISPATCH_DIR="${PROJECT_ROOT}/dispatch"
 DISPATCH_BINARY_SRC="${DISPATCH_DIR}/target/release/dispatch"
 
 echo -e "${BLUE}Building dispatch (MCP task orchestrator)...${NC}"
