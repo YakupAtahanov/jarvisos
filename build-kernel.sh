@@ -9,13 +9,13 @@
 #
 # Prerequisites:
 #   sudo pacman -S base-devel bc flex bison pahole libelf
-#   git submodule update --init linux
+#   git submodule update --init linux-jarvisos
 #
 # Optional: install ccache for much faster incremental rebuilds (~3-5× speedup).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KERNEL_SRC="${REPO_ROOT}/linux"
+KERNEL_SRC="${REPO_ROOT}/linux-jarvisos"
 PKGBUILD_DIR="${REPO_ROOT}/packages/linux-jarvisos"
 PKG_DEST="${REPO_ROOT}/kernel-pkg"
 LOCALVERSION="-jarvisos"
@@ -68,7 +68,7 @@ echo ""
 hdr "Prerequisites"
 
 [[ -f "${KERNEL_SRC}/Makefile" ]] \
-    || die "linux/ submodule not populated at ${KERNEL_SRC}\n       Run: git submodule update --init linux"
+    || die "linux-jarvisos/ submodule not populated at ${KERNEL_SRC}\n       Run: git submodule update --init linux-jarvisos"
 
 [[ -f "${PKGBUILD_DIR}/PKGBUILD" ]] \
     || die "PKGBUILD not found at ${PKGBUILD_DIR}/PKGBUILD"
