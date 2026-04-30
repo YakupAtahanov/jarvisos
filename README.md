@@ -49,7 +49,7 @@ These map directly to the threats identified through live JARVIS OS operation:
   The policy engine operates above the LSM layer. Write an AppArmor profile (or SELinux policy module) for `jarvis-daemon` that enforces mandatory access control independently of the userspace policy tier, providing defense-in-depth.
 
 - [ ] **Pin linux-jarvisos submodule to commit hash, not branch**
-  `linux-jarvisos/` tracks `jarvisos-6.19-stable` by branch ref. Change `.gitmodules` to pin a specific commit SHA to prevent supply-chain drift and ensure upstream CVE patches are applied deliberately.
+  `linux-jarvisos/` tracks `jarvisos-7.0-stable` by branch ref. Change `.gitmodules` to pin a specific commit SHA to prevent supply-chain drift and ensure upstream CVE patches are applied deliberately.
 
 ### MCP Layer (dmcp / dispatch)
 
@@ -121,7 +121,7 @@ Most "AI-integrated" desktops are just a chatbot running on top of a stock kerne
 
 ```
 jarvisos/
-├── linux-jarvisos/               # linux-jarvisos kernel source (submodule, branch jarvisos-6.19-stable)
+├── linux-jarvisos/               # linux-jarvisos kernel source (submodule, branch jarvisos-7.0-stable)
 │   ├── drivers/jarvis/           # JARVIS AI kernel drivers
 │   │   ├── jarvis_core.c         # /dev/jarvis misc device + query ring buffer
 │   │   ├── jarvis_sysmon.c       # CPU/memory/thermal metrics
@@ -218,7 +218,7 @@ cd jarvisos
 git submodule update --init linux-jarvisos
 ```
 
-The `linux-jarvisos/` submodule tracks the `jarvisos-6.19-stable` branch, which is the upstream 6.19 kernel tree plus the JARVIS driver tree under `drivers/jarvis/`.
+The `linux-jarvisos/` submodule tracks the `jarvisos-7.0-stable` branch, which is the upstream 7.0.2 kernel tree plus the JARVIS driver tree under `drivers/jarvis/`.
 
 ### Build modes
 
@@ -262,7 +262,7 @@ SKIP_KERNEL_BUILD=1 bash 03b-build-kernel.sh --host-install
 
 ```bash
 uname -r
-# Should output something like: 6.19.8-jarvisos-g5fffde5bcf9e
+# Should output something like: 7.0.2-jarvisos-g5fffde5bcf9e
 
 # Verify /dev/jarvis is available
 ls -l /dev/jarvis

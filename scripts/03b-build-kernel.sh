@@ -1,5 +1,5 @@
 #!/bin/bash
-# Step 3b: Build linux-jarvisos custom kernel packages (6.19.11)
+# Step 3b: Build linux-jarvisos custom kernel packages (7.0.2)
 #
 # Builds the JARVIS-integrated Linux kernel from the linux-jarvisos/ submodule using
 # the PKGBUILD at packages/linux-jarvisos/PKGBUILD, producing two packages:
