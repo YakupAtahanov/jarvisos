@@ -11,3 +11,6 @@
 [submodule "cachyos-calamares"]
 	path = cachyos-calamares
 	url = git@github.com:CachyOS/cachyos-calamares.git
+[submodule "linux-jarvisos"]
+	path = linux-jarvisos
+	url = git@github.com:majdaltouzach/linux-jarvisos.git
